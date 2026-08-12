@@ -91,7 +91,7 @@ fun AddTransactionScreen(
     LaunchedEffect(events) {
         val now = System.currentTimeMillis()
         val activeEvents = events.filter {
-            now >= it.startDate && (it.endDate == null || now <= it.endDate + 86400000L - 1)
+            it.isActive && now >= it.startDate && (it.endDate == null || now <= it.endDate + 86400000L - 1)
         }
         if (activeEvents.isNotEmpty() && selectedEventId == null && !isEventTransaction) {
             val nearestStart = activeEvents.maxByOrNull { it.startDate }
@@ -541,11 +541,14 @@ fun AddTransactionScreen(
                 }
             }
             
-            // Thêm tính năng chọn Event
-            val activeEventsForSelection = events.filter {
-                val now = System.currentTimeMillis()
-                now >= it.startDate && (it.endDate == null || now <= it.endDate + 86400000L - 1)
-            }.sortedBy { it.startDate }
+            // Thêm tính năng chọn Event (Ưu tiên các sự kiện active)
+            val activeEventsForSelection = events.filter { it.isActive }
+                .sortedWith(
+                    compareByDescending<com.app.data.Event> { ev ->
+                        val now = System.currentTimeMillis()
+                        now >= ev.startDate && (ev.endDate == null || now <= ev.endDate + 86400000L - 1)
+                    }.thenByDescending { ev -> ev.startDate }
+                )
 
             val isOptionExpanded = isEventTransaction || isTransfer
             if (isOptionExpanded) {

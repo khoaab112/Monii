@@ -634,9 +634,10 @@ fun DashboardScreen(
         val activeOrUpcomingEvents = remember(events, nowMs) {
             events
                 .filter { event ->
-                    val isOngoing = nowMs >= event.startDate && (event.endDate == null || nowMs <= event.endDate + 86400000L - 1)
-                    val isUpcomingIn3Days = event.startDate > nowMs && (event.startDate - nowMs) <= threeDaysMs
-                    isOngoing || isUpcomingIn3Days
+                    event.isActive && (
+                        (nowMs >= event.startDate && (event.endDate == null || nowMs <= event.endDate + 86400000L - 1)) ||
+                        (event.startDate > nowMs && (event.startDate - nowMs) <= threeDaysMs)
+                    )
                 }
                 .sortedWith(
                     Comparator { e1, e2 ->

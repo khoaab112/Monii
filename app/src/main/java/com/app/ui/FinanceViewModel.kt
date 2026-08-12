@@ -2192,7 +2192,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // --- EVENTS SERVICES ---
-    fun addEvent(name: String, description: String, startDate: Long, endDate: Long?, limitAmount: Double?, colorHex: String = "#FF9800") {
+    fun addEvent(name: String, description: String, startDate: Long, endDate: Long?, limitAmount: Double?, colorHex: String = "#FF9800", isActive: Boolean = true) {
         viewModelScope.launch {
             repository.insertEvent(Event(
                 name = name,
@@ -2200,7 +2200,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 startDate = startDate,
                 endDate = endDate,
                 limitAmount = limitAmount,
-                colorHex = colorHex
+                colorHex = colorHex,
+                isActive = isActive
             ))
         }
     }
@@ -2214,6 +2215,15 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun deleteEvent(event: Event) {
         viewModelScope.launch {
             repository.deleteEvent(event)
+        }
+    }
+
+    fun reorderEvents(reorderedEvents: List<Event>) {
+        viewModelScope.launch {
+            reorderedEvents.forEachIndexed { index, event ->
+                repository.updateEvent(event.copy(displayOrder = index))
+            }
+            showSuccessNotification("Đã cập nhật thứ tự ưu tiên sự kiện!")
         }
     }
 
@@ -2979,7 +2989,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             startDate = obj.optLong("startDate", System.currentTimeMillis()),
                             endDate = if (obj.has("endDate") && !obj.isNull("endDate")) obj.optLong("endDate") else null,
                             limitAmount = if (obj.has("limitAmount") && !obj.isNull("limitAmount")) obj.optDouble("limitAmount") else null,
-                            colorHex = obj.optString("colorHex", "#2196F3")
+                            colorHex = obj.optString("colorHex", "#2196F3"),
+                            isActive = obj.optBoolean("isActive", true),
+                            displayOrder = obj.optInt("displayOrder", 0)
                         )
                         repository.insertEventDirect(e)
                     }
