@@ -190,19 +190,24 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         val isCloudSyncEnabled by viewModel.isCloudSyncEnabled.collectAsState()
+        var googleAccount by remember(isCloudSyncEnabled) {
+            mutableStateOf(com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context))
+        }
+
         val signInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
             contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode == android.app.Activity.RESULT_OK) {
                 try {
                     val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
-                    task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                    val signedAccount = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                    googleAccount = signedAccount ?: com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
+                    viewModel.toggleCloudSync(true)
                     
                     viewModel.checkDriveBackupConflict(context) { hasConflict ->
                         if (hasConflict) {
                             showCloudRestoreDialog = true
                         } else {
-                            viewModel.toggleCloudSync(true)
                             com.app.service.CloudSyncWorker.setupPeriodicSync(context)
                             viewModel.showSuccessNotification("Đã kết nối Google Drive và bật đồng bộ!")
                         }
@@ -221,12 +226,7 @@ fun SettingsScreen(
                     // ignore
                 }
                 viewModel.showWarningNotification(errorMsg)
-                viewModel.toggleCloudSync(false)
             }
-        }
-
-        val googleAccount = remember(isCloudSyncEnabled) {
-            com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
         }
 
         val gifImageLoader = remember(context) {
@@ -266,7 +266,8 @@ fun SettingsScreen(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         ) {
             Box(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                if (!isCloudSyncEnabled || googleAccount == null) {
+                val currentAccount = googleAccount
+                if (currentAccount == null) {
                     // TRẠNG THÁI 1: CHƯA ĐĂNG NHẬP GOOGLE
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -292,7 +293,10 @@ fun SettingsScreen(
                             onClick = {
                                 val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN)
                                     .requestEmail()
-                                    .requestScopes(com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"))
+                                    .requestScopes(
+                                        com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"),
+                                        com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.readonly")
+                                    )
                                     .build()
                                 val client = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
                                 signInLauncher.launch(client.signInIntent)
@@ -336,7 +340,7 @@ fun SettingsScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            val photoUrl = googleAccount.photoUrl
+                            val photoUrl = currentAccount.photoUrl
                             if (photoUrl != null) {
                                 coil.compose.AsyncImage(
                                     model = photoUrl,
@@ -355,7 +359,7 @@ fun SettingsScreen(
                                         .clip(CircleShape)
                                         .background(MaterialTheme.colorScheme.primaryContainer)
                                 ) {
-                                    val initial = googleAccount.displayName?.firstOrNull()?.toString()?.uppercase() ?: "G"
+                                    val initial = currentAccount.displayName?.firstOrNull()?.toString()?.uppercase() ?: "G"
                                     Text(
                                         text = initial,
                                         fontWeight = FontWeight.Bold,
@@ -367,14 +371,14 @@ fun SettingsScreen(
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = googleAccount.displayName ?: "Người dùng Google",
+                                    text = currentAccount.displayName ?: "Người dùng Google",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = googleAccount.email ?: "",
+                                    text = currentAccount.email ?: "",
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -391,7 +395,10 @@ fun SettingsScreen(
                                     androidx.work.WorkManager.getInstance(context).cancelUniqueWork("CloudSyncService")
                                     viewModel.toggleCloudSync(false)
                                     val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                    com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso).signOut()
+                                    com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso).signOut().addOnCompleteListener {
+                                        googleAccount = null
+                                    }
+                                    googleAccount = null
                                     viewModel.clearAllData(context)
                                     viewModel.setHasSeenOnboarding(false)
                                     viewModel.showSuccessNotification("Đã đăng xuất tài khoản Google")

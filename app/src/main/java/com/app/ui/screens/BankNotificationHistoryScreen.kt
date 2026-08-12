@@ -54,6 +54,11 @@ import com.app.data.Wallet
 import com.app.data.FinanceCategory
 import java.text.SimpleDateFormat
 import java.util.*
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.rememberAsyncImagePainter
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -64,33 +69,42 @@ data class PendingGroup(
 )
 
 fun groupPendingNotifications(pendingLogs: List<NotificationLog>): List<PendingGroup> {
+    if (pendingLogs.isEmpty()) return emptyList()
     val groups = mutableListOf<PendingGroup>()
-    val processedKeys = mutableSetOf<String>()
-    fun keyOf(log: NotificationLog) = log.notificationKey.takeIf { it.isNotBlank() } ?: "${log.timestamp}|${log.text}"
+    val processedKeys = HashSet<String>(pendingLogs.size)
+    fun keyOf(log: NotificationLog) = if (log.notificationKey.isNotBlank()) log.notificationKey else "${log.timestamp}|${log.text}"
 
     for (i in pendingLogs.indices) {
         val logA = pendingLogs[i]
-        if (keyOf(logA) in processedKeys) continue
+        val keyA = keyOf(logA)
+        if (keyA in processedKeys) continue
 
-        val pair = pendingLogs.drop(i + 1).firstOrNull { logB ->
-            keyOf(logB) !in processedKeys &&
+        var pair: NotificationLog? = null
+        for (j in (i + 1) until pendingLogs.size) {
+            val logB = pendingLogs[j]
+            val keyB = keyOf(logB)
+            if (keyB !in processedKeys &&
                 Math.abs(logA.timestamp - logB.timestamp) <= 120_000 &&
                 Math.abs(logA.amount - logB.amount) < 0.01 &&
                 logA.type != logB.type &&
                 logA.walletName.isNotBlank() &&
                 logB.walletName.isNotBlank() &&
                 !logA.walletName.equals(logB.walletName, ignoreCase = true)
+            ) {
+                pair = logB
+                break
+            }
         }
 
         if (pair != null) {
             val expenseLog = if (logA.type == "EXPENSE") logA else pair
             val incomeLog = if (logA.type == "INCOME") logA else pair
             groups.add(PendingGroup(type = "TRANSFER_PAIR", log1 = expenseLog, log2 = incomeLog))
-            processedKeys.add(keyOf(logA))
+            processedKeys.add(keyA)
             processedKeys.add(keyOf(pair))
         } else {
             groups.add(PendingGroup(type = "SINGLE", log1 = logA))
-            processedKeys.add(keyOf(logA))
+            processedKeys.add(keyA)
         }
     }
     return groups
@@ -107,6 +121,22 @@ fun BankNotificationHistoryScreen(
     val notificationLogs by viewModel.notificationLogs.collectAsState()
     val wallets by viewModel.dailyWallets.collectAsState()
     val categories by viewModel.categoriesList.collectAsState()
+    val events by viewModel.allEvents.collectAsState()
+
+    val activeEvents = remember(events) {
+        val nowCurrent = System.currentTimeMillis()
+        events.filter { ev ->
+            ev.endDate == null || nowCurrent <= ev.endDate + 86400000L - 1
+        }.sortedWith(compareBy<com.app.data.Event> {
+            if (it.endDate != null) 0 else 1
+        }.thenBy {
+            if (it.endDate != null) (it.endDate - it.startDate) else Long.MAX_VALUE
+        }.thenBy {
+            it.endDate ?: Long.MAX_VALUE
+        }.thenByDescending {
+            it.startDate
+        })
+    }
 
     var selectedFilterStatus by remember { mutableStateOf("ALL") }
     var searchQuery by remember { mutableStateOf("") }
@@ -478,12 +508,13 @@ fun BankNotificationHistoryScreen(
                         }
                     }
 
-                    items(pendingGroups, key = { "pending_" + it.log1.timestamp + "_" + it.log1.text.hashCode() }) { group ->
+                    items(pendingGroups, key = { "pending_" + (it.log1.notificationKey.ifEmpty { "${it.log1.timestamp}_${it.log1.text.hashCode()}" }) }) { group ->
                         if (group.type == "TRANSFER_PAIR") {
                             PendingTransferPairItem(
                                 logExpense = group.log1,
                                 logIncome = group.log2!!,
                                 wallets = wallets,
+                                events = events,
                                 viewModel = viewModel
                             )
                         } else {
@@ -491,6 +522,8 @@ fun BankNotificationHistoryScreen(
                                 log = group.log1,
                                 wallets = wallets,
                                 categories = categories,
+                                events = events,
+                                activeEvents = activeEvents,
                                 viewModel = viewModel
                             )
                         }
@@ -637,7 +670,7 @@ fun BankNotificationHistoryScreen(
                                                 fontSize = 12.sp
                                             )
                                             val timeStr = remember(log.timestamp) {
-                                                SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date(log.timestamp))
+                                                FormatHelper.formatDateTime(log.timestamp)
                                             }
                                             Text(
                                                 text = timeStr,
@@ -1024,6 +1057,8 @@ fun PendingLogItem(
     log: NotificationLog,
     wallets: List<Wallet>,
     categories: List<FinanceCategory>,
+    events: List<com.app.data.Event>,
+    activeEvents: List<com.app.data.Event>,
     viewModel: FinanceViewModel
 ) {
     val isExpanded = true
@@ -1056,26 +1091,6 @@ fun PendingLogItem(
     var customNoteStr by remember(log) {
         mutableStateOf(log.note)
     }
-
-    val events by viewModel.allEvents.collectAsState()
-    
-    val activeEvents = remember(log.timestamp, events) {
-        val nowLog = log.timestamp
-        val nowCurrent = System.currentTimeMillis()
-        events.filter { ev ->
-            (nowLog >= ev.startDate && (ev.endDate == null || nowLog <= ev.endDate + 86400000L - 1)) ||
-            (nowCurrent >= ev.startDate && (ev.endDate == null || nowCurrent <= ev.endDate + 86400000L - 1)) ||
-            (ev.endDate == null || nowCurrent <= ev.endDate + 86400000L - 1)
-        }.sortedWith(compareBy<com.app.data.Event> {
-            if (it.endDate != null) 0 else 1
-        }.thenBy {
-            if (it.endDate != null) (it.endDate - it.startDate) else Long.MAX_VALUE
-        }.thenBy {
-            it.endDate ?: Long.MAX_VALUE
-        }.thenByDescending {
-            it.startDate
-        })
-    }
     
     var selectedEventId by remember(log, activeEvents) {
         val autoMatch = activeEvents.firstOrNull { ev ->
@@ -1089,10 +1104,35 @@ fun PendingLogItem(
     var showWalletPicker by remember(log) { mutableStateOf(false) }
     var isCategoriesExpanded by remember(log) { mutableStateOf(false) }
 
+    val coroutineScope = rememberCoroutineScope()
+    val animScale = remember(log) { androidx.compose.animation.core.Animatable(1f) }
+    val animAlpha = remember(log) { androidx.compose.animation.core.Animatable(1f) }
+    var currentAnimationJob by remember(log) { mutableStateOf<Job?>(null) }
+
+    val triggerActionAnimation: (() -> Unit) -> Unit = { onFinish ->
+        currentAnimationJob?.cancel()
+        currentAnimationJob = coroutineScope.launch {
+            launch {
+                animScale.animateTo(1.06f, androidx.compose.animation.core.tween(70, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+                animScale.animateTo(0f, androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutLinearInEasing))
+            }
+            launch {
+                animAlpha.animateTo(0f, androidx.compose.animation.core.tween(250))
+            }
+            delay(250)
+            onFinish()
+        }
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 6.dp)
+            .graphicsLayer {
+                scaleX = animScale.value
+                scaleY = animScale.value
+                alpha = animAlpha.value
+            },
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
@@ -1155,7 +1195,7 @@ fun PendingLogItem(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             val timeStr = remember(log.timestamp) {
-                                SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date(log.timestamp))
+                                FormatHelper.formatDateTime(log.timestamp)
                             }
                             Text(
                                 text = timeStr,
@@ -1921,15 +1961,17 @@ fun PendingLogItem(
                                             return@Button
                                         }
                                         val finalAmount = customAmountStr.toDoubleOrNull() ?: log.amount
-                                        viewModel.confirmPendingNotificationLog(
-                                            log = log,
-                                            walletId = selectedWalletId,
-                                            categoryName = selectedCategoryName,
-                                            overrideAmount = finalAmount,
-                                            overrideNote = customNoteStr,
-                                            overrideEventId = selectedEventId
-                                        )
-                                        viewModel.showSuccessNotification("Xác nhận giao dịch thành công!")
+                                        triggerActionAnimation {
+                                            viewModel.confirmPendingNotificationLog(
+                                                log = log,
+                                                walletId = selectedWalletId,
+                                                categoryName = selectedCategoryName,
+                                                overrideAmount = finalAmount,
+                                                overrideNote = customNoteStr,
+                                                overrideEventId = selectedEventId
+                                            )
+                                            viewModel.showSuccessNotification("Xác nhận giao dịch thành công!")
+                                        }
                                     },
                                     modifier = Modifier
                                         .weight(1f)
@@ -1950,8 +1992,10 @@ fun PendingLogItem(
 
                                 OutlinedButton(
                                     onClick = {
-                                        viewModel.deleteNotificationLog(log)
-                                        viewModel.showSuccessNotification("Đã bỏ qua giao dịch quét!")
+                                        triggerActionAnimation {
+                                            viewModel.deleteNotificationLog(log)
+                                            viewModel.showSuccessNotification("Đã bỏ qua giao dịch quét!")
+                                        }
                                     },
                                     modifier = Modifier
                                         .weight(1f)
@@ -1985,6 +2029,7 @@ fun PendingTransferPairItem(
     logExpense: NotificationLog,
     logIncome: NotificationLog,
     wallets: List<Wallet>,
+    events: List<com.app.data.Event>,
     viewModel: FinanceViewModel
 ) {
     val sourceRec = remember(logExpense, wallets) {
@@ -2011,10 +2056,35 @@ fun PendingTransferPairItem(
     var sourceWalletDropdownExpanded by remember { mutableStateOf(false) }
     var destWalletDropdownExpanded by remember { mutableStateOf(false) }
     
+    val coroutineScope = rememberCoroutineScope()
+    val animScale = remember(logExpense) { androidx.compose.animation.core.Animatable(1f) }
+    val animAlpha = remember(logExpense) { androidx.compose.animation.core.Animatable(1f) }
+    var currentAnimationJob by remember(logExpense) { mutableStateOf<Job?>(null) }
+
+    val triggerActionAnimation: (() -> Unit) -> Unit = { onFinish ->
+        currentAnimationJob?.cancel()
+        currentAnimationJob = coroutineScope.launch {
+            launch {
+                animScale.animateTo(1.06f, androidx.compose.animation.core.tween(70, easing = androidx.compose.animation.core.FastOutSlowInEasing))
+                animScale.animateTo(0f, androidx.compose.animation.core.tween(200, easing = androidx.compose.animation.core.FastOutLinearInEasing))
+            }
+            launch {
+                animAlpha.animateTo(0f, androidx.compose.animation.core.tween(250))
+            }
+            delay(250)
+            onFinish()
+        }
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
+            .padding(vertical = 6.dp)
+            .graphicsLayer {
+                scaleX = animScale.value
+                scaleY = animScale.value
+                alpha = animAlpha.value
+            },
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surface
         ),
@@ -2067,7 +2137,7 @@ fun PendingTransferPairItem(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             val timeStr = remember(logExpense.timestamp) {
-                                SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault()).format(Date(logExpense.timestamp))
+                                FormatHelper.formatDateTime(logExpense.timestamp)
                             }
                             Text(
                                 text = timeStr,
@@ -2296,15 +2366,17 @@ fun PendingTransferPairItem(
                                 return@Button
                             }
                             val finalAmount = customAmountStr.toDoubleOrNull() ?: logExpense.amount
-                            viewModel.confirmPendingInternalTransfer(
-                                logExpense = logExpense,
-                                logIncome = logIncome,
-                                sourceWalletId = selectedSourceWalletId,
-                                destWalletId = selectedDestWalletId,
-                                amount = finalAmount,
-                                note = customNoteStr
-                            )
-                            viewModel.showSuccessNotification("Duyệt chuyển khoản nội bộ thành công!")
+                            triggerActionAnimation {
+                                viewModel.confirmPendingInternalTransfer(
+                                    logExpense = logExpense,
+                                    logIncome = logIncome,
+                                    sourceWalletId = selectedSourceWalletId,
+                                    destWalletId = selectedDestWalletId,
+                                    amount = finalAmount,
+                                    note = customNoteStr
+                                )
+                                viewModel.showSuccessNotification("Duyệt chuyển khoản nội bộ thành công!")
+                            }
                         },
                         modifier = Modifier.weight(1f).height(36.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2E7D32)),
@@ -2322,8 +2394,10 @@ fun PendingTransferPairItem(
 
                     OutlinedButton(
                         onClick = {
-                            viewModel.deleteNotificationLogsBulk(listOf(logExpense, logIncome), deleteCompletely = true)
-                            viewModel.showSuccessNotification("Đã bỏ qua cặp giao dịch!")
+                            triggerActionAnimation {
+                                viewModel.deleteNotificationLogsBulk(listOf(logExpense, logIncome), deleteCompletely = true)
+                                viewModel.showSuccessNotification("Đã bỏ qua cặp giao dịch!")
+                            }
                         },
                         modifier = Modifier.weight(1f).height(36.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFC62828)),

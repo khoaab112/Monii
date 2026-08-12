@@ -37,7 +37,7 @@ class CloudSyncWorker(
             }
 
             // Get access token for Drive
-            val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+            val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
             val token = GoogleAuthUtil.getToken(applicationContext, account, scope)
 
             // Read database (assuming we'll need to export everything to a JSON)

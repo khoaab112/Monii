@@ -9,6 +9,7 @@ import java.util.Locale
 object FormatHelper {
     private val dateFormatter = SimpleDateFormat("dd/MM/yyyy", java.util.Locale.Builder().setLanguage("vi").setRegion("VN").build())
     private val timeFormatter = SimpleDateFormat("HH:mm", java.util.Locale.Builder().setLanguage("vi").setRegion("VN").build())
+    private val dateTimeFormatter = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", java.util.Locale.Builder().setLanguage("vi").setRegion("VN").build())
 
     private val vndSymbols = DecimalFormatSymbols(java.util.Locale.Builder().setLanguage("vi").setRegion("VN").build()).apply {
         groupingSeparator = '.'
@@ -138,6 +139,16 @@ object FormatHelper {
         } catch (e: Exception) {
             val cal = Calendar.getInstance().apply { timeInMillis = timestamp }
             String.format("%02d/%02d/%04d", cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.YEAR))
+        }
+    }
+
+    fun formatDateTime(timestamp: Long): String {
+        return try {
+            synchronized(dateTimeFormatter) {
+                dateTimeFormatter.format(timestamp)
+            }
+        } catch (e: Exception) {
+            "${formatDate(timestamp)} ${formatTime(timestamp)}"
         }
     }
 }

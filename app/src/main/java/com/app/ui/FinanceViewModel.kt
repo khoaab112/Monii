@@ -1269,6 +1269,19 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun syncSystemCategories(categoriesToAdd: List<FinanceCategory>) {
+        viewModelScope.launch {
+            val currentList = _categoriesList.value.toMutableList()
+            val existingNames = currentList.map { it.name.trim().lowercase() }.toSet()
+            val toAdd = categoriesToAdd.filter { it.name.trim().lowercase() !in existingNames }
+            if (toAdd.isNotEmpty()) {
+                currentList.addAll(toAdd)
+                repository.saveSetting("custom_categories", serializeCategories(currentList))
+                _categoriesList.value = currentList
+            }
+        }
+    }
+
     fun addCategory(name: String, iconName: String, colorHex: String, type: String, parentName: String? = null) {
         viewModelScope.launch {
             val currentList = _categoriesList.value.toMutableList()
@@ -2774,7 +2787,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     _syncStatus.value = "ERROR"
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val folderName = "[APP_FINANCE]"
@@ -3058,7 +3071,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     _syncStatus.value = "ERROR"
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val exportedData = repository.exportAllDataAsJson()
@@ -3188,7 +3201,7 @@ val folderName = "[APP_FINANCE]"
                     callback(false)
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val folderName = "[APP_FINANCE]"
@@ -3265,7 +3278,7 @@ val folderName = "[APP_FINANCE]"
                     return@launch
                 }
 
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val folderName = "[APP_FINANCE]"
@@ -3275,7 +3288,7 @@ val folderName = "[APP_FINANCE]"
                 // 1. Check folder [APP_FINANCE]
                 var folderId: String? = null
                 val searchFolderRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder'&spaces=drive")
+                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
                     .header("Authorization", "Bearer ${token}")
                     .build()
                 val searchFolderResponse = client.newCall(searchFolderRequest).execute()
@@ -3290,35 +3303,47 @@ val folderName = "[APP_FINANCE]"
                     }
                 }
 
-                // CASE 3: Check ra không có thư mục -> Coi là new user, thông báo "Chào mừng bạn đến với Ứng dụng lịch sử chi tiêu"
-                if (folderId == null) {
-                    _syncStatus.value = "SUCCESS"
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        onResult(GoogleOnboardingResult.NoFolderNewUser())
-                    }
-                    return@launch
-                }
-
-                // Folder exists -> Check backup file
+                // 2. Search backup file inside folder with orderBy=modifiedTime desc (picks newest modified file)
                 var fileId: String? = null
-                val searchFileRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents&spaces=drive")
-                    .header("Authorization", "Bearer ${token}")
-                    .build()
-                
-                val searchResponse = client.newCall(searchFileRequest).execute()
-                if (searchResponse.isSuccessful) {
-                    val json = searchResponse.body?.string()
-                    if (json != null) {
-                        val jsonObj = org.json.JSONObject(json)
-                        val files = jsonObj.optJSONArray("files")
-                        if (files != null && files.length() > 0) {
-                            fileId = files.getJSONObject(0).getString("id")
+                if (folderId != null) {
+                    val searchFileRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    
+                    val searchResponse = client.newCall(searchFileRequest).execute()
+                    if (searchResponse.isSuccessful) {
+                        val json = searchResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                            }
                         }
                     }
                 }
 
-                // CASE 1: Thư mục có nhưng không có file tồn tại -> Báo không tìm được file, tạo dữ liệu mới, coi là new user
+                // 3. Fallback search across entire Drive space if fileId is still null
+                if (fileId == null) {
+                    val fallbackSearchRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    val fallbackResponse = client.newCall(fallbackSearchRequest).execute()
+                    if (fallbackResponse.isSuccessful) {
+                        val json = fallbackResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                            }
+                        }
+                    }
+                }
+
+                // CASE 1: Không tìm thấy file sao lưu -> Coi như New User
                 if (fileId == null) {
                     _syncStatus.value = "SUCCESS"
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -3369,6 +3394,9 @@ val folderName = "[APP_FINANCE]"
 
                     // CASE 2: File có và định dạng hợp lệ -> Xử lý khôi phục bình thường & báo chào mừng quay trở lại
                     performRestoreFromJsonString(jsonString, {})
+                    repository.saveSetting("cloud_sync_enabled", "true")
+                    repository.saveSetting("is_cloud_sync_enabled", "true")
+                    _isCloudSyncEnabled.value = true
                     try {
                         kotlinx.coroutines.withTimeout(3000) {
                             allWallets.first { it.isNotEmpty() }
@@ -3411,17 +3439,17 @@ val folderName = "[APP_FINANCE]"
                     _syncStatus.value = "ERROR"
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
-val folderName = "[APP_FINANCE]"
+                val folderName = "[APP_FINANCE]"
                 val fileName = "finance_backup.json"
                 val client = okhttp3.OkHttpClient()
                 
                 addLog("Đang kiểm tra thư mục ${folderName}...")
                 var folderId: String? = null
                 val searchFolderRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder'&spaces=drive")
+                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
                     .header("Authorization", "Bearer ${token}")
                     .build()
                 val searchFolderResponse = client.newCall(searchFolderRequest).execute()
@@ -3436,34 +3464,51 @@ val folderName = "[APP_FINANCE]"
                     }
                 }
 
-                if (folderId == null) {
-                    addLog("Dữ liệu không tồn tại: Thư mục ${folderName} chưa được tạo trên Drive.")
-                    _syncStatus.value = "ERROR"
-                    return@launch
-                }
-                
-                addLog("Đang tìm file sao lưu bên trong thư mục...")
                 var fileId: String? = null
-                val searchFileRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents&spaces=drive")
-                    .header("Authorization", "Bearer ${token}")
-                    .build()
-                
-                val searchResponse = client.newCall(searchFileRequest).execute()
-                if (searchResponse.isSuccessful) {
-                    val json = searchResponse.body?.string()
-                    if (json != null) {
-                        val jsonObj = org.json.JSONObject(json)
-                        val files = jsonObj.optJSONArray("files")
-                        if (files != null && files.length() > 0) {
-                            fileId = files.getJSONObject(0).getString("id")
-                            addLog("Đã tìm thấy file sao lưu!")
+                if (folderId != null) {
+                    addLog("Đang tìm file sao lưu bên trong thư mục...")
+                    val searchFileRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    
+                    val searchResponse = client.newCall(searchFileRequest).execute()
+                    if (searchResponse.isSuccessful) {
+                        val json = searchResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                                addLog("Đã tìm thấy file sao lưu trong thư mục ${folderName}!")
+                            }
                         }
                     }
                 }
                 
                 if (fileId == null) {
-                    addLog("Dữ liệu không tồn tại: Không có bản sao lưu nào trong thư mục ${folderName}.")
+                    addLog("Đang tìm kiếm file sao lưu finance_backup.json trên không gian Drive...")
+                    val searchFileRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    
+                    val searchResponse = client.newCall(searchFileRequest).execute()
+                    if (searchResponse.isSuccessful) {
+                        val json = searchResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                                addLog("Đã tìm thấy file sao lưu mới nhất trên Google Drive!")
+                            }
+                        }
+                    }
+                }
+
+                if (fileId == null) {
+                    addLog("Dữ liệu không tồn tại: Không tìm thấy tệp sao lưu ${fileName} trên Google Drive.")
                     _syncStatus.value = "ERROR"
                     return@launch
                 }
