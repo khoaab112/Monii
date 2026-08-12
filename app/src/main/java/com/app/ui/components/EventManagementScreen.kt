@@ -410,63 +410,22 @@ fun EventManagementScreen(
                             try { Color(android.graphics.Color.parseColor(event.colorHex)) } catch (e: Exception) { Color(0xFFFF9800) }
                         }
 
-                        val isDragged = draggedIndex == index
-                        val verticalOffset = if (isDragged) driftY else 0f
-                        val zIndexValue = if (isDragged) 10f else 1f
-                        val scaleValue = if (isDragged) 1.04f else 1f
-
-                        val cardModifier = Modifier
-                            .fillMaxWidth()
-                            .staggeredEntrance(index + 1, "reorder_event_${event.id}", seenKeys)
-                            .zIndex(zIndexValue)
-                            .graphicsLayer {
-                                translationY = verticalOffset
-                                scaleX = scaleValue
-                                scaleY = scaleValue
-                            }
-                            .pointerInput(index) {
-                                detectDragGestures(
-                                    onDragStart = {
-                                        draggedIndex = index
-                                        driftY = 0f
-                                    },
-                                    onDragEnd = { onDragReleased() },
-                                    onDragCancel = { onDragReleased() },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        val targetIdx = draggedIndex
-                                        if (targetIdx != null) {
-                                            val itemHeightPx = 74.dp.toPx()
-                                            val minAllowedDrift = if (targetIdx > 0) -itemHeightPx * 1.1f else 0f
-                                            val maxAllowedDrift = if (targetIdx < reorderListState.lastIndex) itemHeightPx * 1.1f else 0f
-                                            driftY = (driftY + dragAmount.y).coerceIn(minAllowedDrift, maxAllowedDrift)
-
-                                            if (driftY > itemHeightPx * 0.7f && targetIdx < reorderListState.lastIndex) {
-                                                val mutableList = reorderListState.toMutableList()
-                                                val next = mutableList[targetIdx + 1]
-                                                mutableList[targetIdx + 1] = mutableList[targetIdx]
-                                                mutableList[targetIdx] = next
-                                                reorderListState = mutableList
-                                                draggedIndex = targetIdx + 1
-                                                driftY -= itemHeightPx
-                                            } else if (driftY < -itemHeightPx * 0.7f && targetIdx > 0) {
-                                                val mutableList = reorderListState.toMutableList()
-                                                val prev = mutableList[targetIdx - 1]
-                                                mutableList[targetIdx - 1] = mutableList[targetIdx]
-                                                mutableList[targetIdx] = prev
-                                                reorderListState = mutableList
-                                                draggedIndex = targetIdx - 1
-                                                driftY += itemHeightPx
-                                            }
-                                        }
-                                    }
-                                )
-                            }
-
                         Surface(
-                            modifier = cardModifier,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem()
+                                .staggeredEntrance(index + 1, "reorder_event_${event.id}", seenKeys)
+                                .graphicsLayer {
+                                    val isDragged = draggedIndex == index
+                                    translationY = if (isDragged) driftY else 0f
+                                    scaleX = if (isDragged) 1.03f else 1f
+                                    scaleY = if (isDragged) 1.03f else 1f
+                                    shadowElevation = if (isDragged) 16.dp.toPx() else 2.dp.toPx()
+                                    shape = RoundedCornerShape(16.dp)
+                                    clip = false
+                                }
+                                .zIndex(if (draggedIndex == index) 10f else 1f),
                             color = MaterialTheme.colorScheme.surface,
-                            shadowElevation = if (isDragged) 6.dp else 2.dp,
                             shape = RoundedCornerShape(16.dp),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                         ) {
@@ -540,12 +499,57 @@ fun EventManagementScreen(
                                             Icon(Icons.Default.ArrowDownward, contentDescription = "Xuống", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
-                                    Icon(
-                                        imageVector = Icons.Default.DragHandle,
-                                        contentDescription = "Kéo xếp",
-                                        tint = Color(0xFFB0BEC5),
-                                        modifier = Modifier.size(24.dp)
-                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(start = 4.dp)
+                                            .pointerInput(index) {
+                                                detectDragGestures(
+                                                    onDragStart = {
+                                                        draggedIndex = index
+                                                        driftY = 0f
+                                                    },
+                                                    onDragEnd = { onDragReleased() },
+                                                    onDragCancel = { onDragReleased() },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        val targetIdx = draggedIndex
+                                                        if (targetIdx != null) {
+                                                            val itemHeightPx = 74.dp.toPx()
+                                                            val minAllowedDrift = if (targetIdx > 0) -itemHeightPx * 1.2f else 0f
+                                                            val maxAllowedDrift = if (targetIdx < reorderListState.lastIndex) itemHeightPx * 1.2f else 0f
+                                                            driftY = (driftY + dragAmount.y).coerceIn(minAllowedDrift, maxAllowedDrift)
+
+                                                            if (driftY > itemHeightPx * 0.5f && targetIdx < reorderListState.lastIndex) {
+                                                                val mutableList = reorderListState.toMutableList()
+                                                                val next = mutableList[targetIdx + 1]
+                                                                mutableList[targetIdx + 1] = mutableList[targetIdx]
+                                                                mutableList[targetIdx] = next
+                                                                reorderListState = mutableList
+                                                                draggedIndex = targetIdx + 1
+                                                                driftY -= itemHeightPx
+                                                            } else if (driftY < -itemHeightPx * 0.5f && targetIdx > 0) {
+                                                                val mutableList = reorderListState.toMutableList()
+                                                                val prev = mutableList[targetIdx - 1]
+                                                                mutableList[targetIdx - 1] = mutableList[targetIdx]
+                                                                mutableList[targetIdx] = prev
+                                                                reorderListState = mutableList
+                                                                draggedIndex = targetIdx - 1
+                                                                driftY += itemHeightPx
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                            .padding(6.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DragHandle,
+                                            contentDescription = "Kéo xếp",
+                                            tint = if (draggedIndex == index) Color(0xFF5C54E5) else Color(0xFFB0BEC5),
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
