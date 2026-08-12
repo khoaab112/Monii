@@ -162,14 +162,6 @@ fun MainContent(
             if (!isPermitted) {
                 showPermissionErrorPopup = true
             } else {
-                // If it's permitted but the service is dead (e.g., killed by Xiaomi HyperOS),
-                // request a rebind.
-                if (com.app.service.BankNotificationListenerService.instance == null) {
-                    com.app.service.BankNotificationListenerService.requestRebindService(context)
-                    // Wait a bit for it to bind before trying to scan
-                    kotlinx.coroutines.delay(1000)
-                }
-
                 viewModel.scanNotificationsManual(
                     context = context,
                     onSuccess = { count ->

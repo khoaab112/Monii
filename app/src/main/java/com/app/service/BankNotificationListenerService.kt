@@ -51,23 +51,6 @@ class BankNotificationListenerService : NotificationListenerService() {
             } catch (e: Exception) {
                 e.printStackTrace()
             }
-            
-            // Fallback for MIUI/HyperOS/battery savers
-            try {
-                val pm = context.packageManager
-                pm.setComponentEnabledSetting(
-                    componentName,
-                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
-                    android.content.pm.PackageManager.DONT_KILL_APP
-                )
-                pm.setComponentEnabledSetting(
-                    componentName,
-                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
-                    android.content.pm.PackageManager.DONT_KILL_APP
-                )
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
         }
     }
 

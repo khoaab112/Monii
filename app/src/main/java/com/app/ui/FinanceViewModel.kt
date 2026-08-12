@@ -507,21 +507,26 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 repository.allWallets.first()
+                loadCategories()
+                loadSecuritySettings()
+                loadNotificationSettings()
+                processRecurringTransactions()
+                processRecurringBudgets()
             } catch (e: Exception) {
                 e.printStackTrace()
+            } finally {
+                kotlinx.coroutines.delay(300)
+                _isLoadingSettings.value = false
             }
-            loadCategories()
-            loadSecuritySettings()
-            loadNotificationSettings()
-            processRecurringTransactions()
-            processRecurringBudgets()
-            kotlinx.coroutines.delay(600)
-            _isLoadingSettings.value = false
 
             // Auto-trigger background cloud sync if enabled on app startup
-            if (_isCloudSyncEnabled.value) {
-                com.app.service.CloudSyncWorker.setupPeriodicSync(getApplication())
-                triggerSilentCloudSync()
+            try {
+                if (_isCloudSyncEnabled.value) {
+                    com.app.service.CloudSyncWorker.setupPeriodicSync(getApplication())
+                    triggerSilentCloudSync()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
 
@@ -1653,61 +1658,73 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun getNextMonth(month: String): String {
-        // month format: YYYY-MM
-        val parts = month.split("-")
-        var y = parts[0].toInt()
-        var m = parts[1].toInt()
-        m++
-        if (m > 12) {
-            m = 1
-            y++
+        return try {
+            val parts = month.split("-")
+            if (parts.size < 2) return month
+            var y = parts[0].toInt()
+            var m = parts[1].toInt()
+            m++
+            if (m > 12) {
+                m = 1
+                y++
+            }
+            String.format("%04d-%02d", y, m)
+        } catch (e: Exception) {
+            month
         }
-        return String.format("%04d-%02d", y, m)
     }
 
     // --- RECURRING TRANSACTIONS ENGINE ---
     private suspend fun processRecurringTransactions() {
-        // Find existing recurring transactions and check if duplicate is due
-        val txs = repository.allTransactions.firstOrNull() ?: return
-        val recurringSource = txs.filter { it.isRecurring && it.recurrencePeriod != "NONE" }
-        
-        val currentTime = System.currentTimeMillis()
-        
-        for (src in recurringSource) {
-            var lastOccurrenceTime = src.timestamp
-            // Find other occurrences in history of the same source
-            val related = txs.filter { it.note == src.note && it.amount == src.amount && it.walletId == src.walletId && it.categoryName == src.categoryName }
-            val latestInstance = related.maxByOrNull { it.timestamp }
-            if (latestInstance != null) {
-                lastOccurrenceTime = latestInstance.timestamp
-            }
+        try {
+            // Find existing recurring transactions and check if duplicate is due
+            val txs = repository.allTransactions.firstOrNull() ?: return
+            val recurringSource = txs.filter { it.isRecurring && it.recurrencePeriod != "NONE" }
+            
+            val currentTime = System.currentTimeMillis()
+            
+            for (src in recurringSource) {
+                var lastOccurrenceTime = src.timestamp
+                // Find other occurrences in history of the same source
+                val related = txs.filter { it.note == src.note && it.amount == src.amount && it.walletId == src.walletId && it.categoryName == src.categoryName }
+                val latestInstance = related.maxByOrNull { it.timestamp }
+                if (latestInstance != null) {
+                    lastOccurrenceTime = latestInstance.timestamp
+                }
 
-            val intervalMs = when (src.recurrencePeriod) {
-                "DAILY" -> 24L * 60L * 60L * 1000L
-                "WEEKLY" -> 7L * 24L * 60L * 60L * 1000L
-                "MONTHLY" -> 30L * 24L * 60L * 60L * 1000L // Simple approximation
-                else -> Long.MAX_VALUE
-            }
+                val intervalMs = when (src.recurrencePeriod) {
+                    "DAILY" -> 24L * 60L * 60L * 1000L
+                    "WEEKLY" -> 7L * 24L * 60L * 60L * 1000L
+                    "MONTHLY" -> 30L * 24L * 60L * 60L * 1000L // Simple approximation
+                    else -> Long.MAX_VALUE
+                }
 
-            var nextTime = lastOccurrenceTime + intervalMs
-            while (nextTime <= currentTime && intervalMs < Long.MAX_VALUE) {
-                // Insert a duplicate dated nextTime!
-                val newTx = Transaction(
-                    walletId = src.walletId,
-                    walletName = src.walletName,
-                    type = src.type,
-                    amount = src.amount,
-                    categoryName = src.categoryName,
-                    categoryIcon = src.categoryIcon,
-                    categoryColor = src.categoryColor,
-                    note = src.note,
-                    timestamp = nextTime,
-                    isRecurring = src.isRecurring,
-                    recurrencePeriod = src.recurrencePeriod
-                )
-                repository.insertTransaction(newTx)
-                nextTime += intervalMs
+                if (intervalMs <= 0 || intervalMs == Long.MAX_VALUE) continue
+
+                var nextTime = lastOccurrenceTime + intervalMs
+                var iterations = 0
+                while (nextTime <= currentTime && iterations < 12) {
+                    // Insert a duplicate dated nextTime!
+                    val newTx = Transaction(
+                        walletId = src.walletId,
+                        walletName = src.walletName,
+                        type = src.type,
+                        amount = src.amount,
+                        categoryName = src.categoryName,
+                        categoryIcon = src.categoryIcon,
+                        categoryColor = src.categoryColor,
+                        note = src.note,
+                        timestamp = nextTime,
+                        isRecurring = src.isRecurring,
+                        recurrencePeriod = src.recurrencePeriod
+                    )
+                    repository.insertTransaction(newTx)
+                    nextTime += intervalMs
+                    iterations++
+                }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 

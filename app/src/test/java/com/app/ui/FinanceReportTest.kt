@@ -95,10 +95,10 @@ class FinanceReportTest {
         // Wait for combine flow
         var filteredList: List<Transaction> = emptyList()
         for (i in 1..50) {
-            filteredList = viewModel.filteredTransactions.value
-            if (filteredList.size == 2) break
-            Thread.sleep(50)
             testDispatcher.scheduler.advanceUntilIdle()
+            filteredList = viewModel.filteredTransactions.value
+            if (filteredList.size == 2 && filteredList.all { it.type == "EXPENSE" }) break
+            Thread.sleep(50)
         }
 
         // Assert
