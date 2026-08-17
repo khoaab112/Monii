@@ -126,13 +126,13 @@ fun BankNotificationHistoryScreen(
     val activeEvents = remember(events) {
         val nowCurrent = System.currentTimeMillis()
         events.filter { ev ->
-            ev.endDate == null || nowCurrent <= ev.endDate + 86400000L - 1
+            FormatHelper.isEventOngoing(ev.startDate, ev.endDate, nowCurrent)
         }.sortedWith(compareBy<com.app.data.Event> {
             if (it.endDate != null) 0 else 1
         }.thenBy {
             if (it.endDate != null) (it.endDate - it.startDate) else Long.MAX_VALUE
         }.thenBy {
-            it.endDate ?: Long.MAX_VALUE
+            it.endDate?.let { end -> FormatHelper.getEndOfDay(end) } ?: Long.MAX_VALUE
         }.thenByDescending {
             it.startDate
         })
@@ -1094,7 +1094,7 @@ fun PendingLogItem(
     
     var selectedEventId by remember(log, activeEvents) {
         val autoMatch = activeEvents.firstOrNull { ev ->
-            log.timestamp >= ev.startDate && (ev.endDate == null || log.timestamp <= ev.endDate + 86400000L - 1)
+            FormatHelper.isEventOngoing(ev.startDate, ev.endDate, log.timestamp)
         }
         mutableStateOf(autoMatch?.id ?: activeEvents.firstOrNull()?.id)
     }

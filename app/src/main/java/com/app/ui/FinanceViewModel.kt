@@ -913,15 +913,14 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun getActiveEventIdForTimestamp(timestamp: Long): Int? {
-        val now = timestamp
         val activeEvents = allEvents.value.filter {
-            now >= it.startDate && (it.endDate == null || now <= it.endDate + 86400000L - 1)
+            it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, timestamp)
         }.sortedWith(compareBy<com.app.data.Event> {
             if (it.endDate != null) 0 else 1
         }.thenBy {
             if (it.endDate != null) (it.endDate - it.startDate) else Long.MAX_VALUE
         }.thenBy {
-            it.endDate ?: Long.MAX_VALUE
+            it.endDate?.let { end -> FormatHelper.getEndOfDay(end) } ?: Long.MAX_VALUE
         }.thenByDescending {
             it.startDate
         })

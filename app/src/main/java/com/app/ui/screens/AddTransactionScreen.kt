@@ -91,7 +91,7 @@ fun AddTransactionScreen(
     LaunchedEffect(events) {
         val now = System.currentTimeMillis()
         val activeEvents = events.filter {
-            it.isActive && now >= it.startDate && (it.endDate == null || now <= it.endDate + 86400000L - 1)
+            it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, now)
         }
         if (activeEvents.isNotEmpty() && selectedEventId == null && !isEventTransaction) {
             val nearestStart = activeEvents.maxByOrNull { it.startDate }
@@ -545,8 +545,7 @@ fun AddTransactionScreen(
             val activeEventsForSelection = events.filter { it.isActive }
                 .sortedWith(
                     compareByDescending<com.app.data.Event> { ev ->
-                        val now = System.currentTimeMillis()
-                        now >= ev.startDate && (ev.endDate == null || now <= ev.endDate + 86400000L - 1)
+                        FormatHelper.isEventOngoing(ev.startDate, ev.endDate)
                     }.thenByDescending { ev -> ev.startDate }
                 )
 

@@ -630,19 +630,18 @@ fun DashboardScreen(
 
         // --- Events Widget ---
         val nowMs = System.currentTimeMillis()
-        val threeDaysMs = 3 * 86400000L
         val activeOrUpcomingEvents = remember(events, nowMs) {
             events
                 .filter { event ->
                     event.isActive && (
-                        (nowMs >= event.startDate && (event.endDate == null || nowMs <= event.endDate + 86400000L - 1)) ||
-                        (event.startDate > nowMs && (event.startDate - nowMs) <= threeDaysMs)
+                        FormatHelper.isEventOngoing(event.startDate, event.endDate, nowMs) ||
+                        (FormatHelper.isEventUpcoming(event.startDate, nowMs) && FormatHelper.getDaysDifference(nowMs, event.startDate) <= 3)
                     )
                 }
                 .sortedWith(
                     Comparator { e1, e2 ->
-                        val isOngoing1 = nowMs >= e1.startDate && (e1.endDate == null || nowMs <= e1.endDate + 86400000L - 1)
-                        val isOngoing2 = nowMs >= e2.startDate && (e2.endDate == null || nowMs <= e2.endDate + 86400000L - 1)
+                        val isOngoing1 = FormatHelper.isEventOngoing(e1.startDate, e1.endDate, nowMs)
+                        val isOngoing2 = FormatHelper.isEventOngoing(e2.startDate, e2.endDate, nowMs)
 
                         when {
                             // 1. Ongoing events always take precedence over upcoming events
@@ -651,14 +650,16 @@ fun DashboardScreen(
                             
                             // 2. Both Ongoing: sort by endDate ascending (events ending soonest appear first)
                             isOngoing1 && isOngoing2 -> {
-                                val end1 = e1.endDate ?: Long.MAX_VALUE
-                                val end2 = e2.endDate ?: Long.MAX_VALUE
+                                val end1 = e1.endDate?.let { FormatHelper.getEndOfDay(it) } ?: Long.MAX_VALUE
+                                val end2 = e2.endDate?.let { FormatHelper.getEndOfDay(it) } ?: Long.MAX_VALUE
                                 end1.compareTo(end2)
                             }
 
                             // 3. Both Upcoming: sort by startDate ascending (events starting soonest appear first)
                             else -> {
-                                e1.startDate.compareTo(e2.startDate)
+                                val start1 = FormatHelper.getStartOfDay(e1.startDate)
+                                val start2 = FormatHelper.getStartOfDay(e2.startDate)
+                                start1.compareTo(start2)
                             }
                         }
                     }
@@ -1264,7 +1265,7 @@ fun DashboardScreen(
 
                     // Rủi ro 2: Sự kiện vượt ngân sách (Active Event Risk)
                     val activeEvents = events.filter { 
-                        it.startDate <= now && (it.endDate == null || it.endDate!! >= now) && (it.limitAmount ?: 0.0) > 0.0 
+                        it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, now) && (it.limitAmount ?: 0.0) > 0.0 
                     }
                     activeEvents.forEach { ev ->
                         val limit = ev.limitAmount!!
@@ -1279,9 +1280,11 @@ fun DashboardScreen(
                                 )
                             )
                         } else {
-                            val duration = if (ev.endDate != null && ev.endDate!! > ev.startDate) (ev.endDate!! - ev.startDate).toDouble() else 0.0
+                            val actualStart = FormatHelper.getStartOfDay(ev.startDate)
+                            val actualEnd = ev.endDate?.let { FormatHelper.getEndOfDay(it) }
+                            val duration = if (actualEnd != null && actualEnd > actualStart) (actualEnd - actualStart).toDouble() else 0.0
                             if (duration > 0) {
-                                val timeRatio = (now - ev.startDate).toDouble() / duration
+                                val timeRatio = ((now - actualStart).toDouble() / duration).coerceIn(0.0, 1.0)
                                 val spentRatio = spent / limit
                                 if (timeRatio <= 0.5 && spentRatio >= 0.8) {
                                     riskAlerts.add(
@@ -1914,15 +1917,15 @@ private fun DashboardEventCard(
     val offsetYPx = remember(density) { with(density) { 35.dp.toPx() } }
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
 
-    val isOngoing = nowMs >= event.startDate && (event.endDate == null || nowMs <= event.endDate + 86400000L - 1)
+    val isOngoing = FormatHelper.isEventOngoing(event.startDate, event.endDate, nowMs)
     val daysText = if (isOngoing) {
         if (event.endDate != null) {
-            val daysLeft = Math.max(1, ((event.endDate - nowMs) / 86400000L).toInt())
-            "Còn $daysLeft ngày"
+            val diffDays = FormatHelper.getDaysDifference(nowMs, event.endDate)
+            if (diffDays == 0) "Hôm nay hết hạn" else "Còn $diffDays ngày"
         } else "Đang diễn ra"
     } else {
-        val daysStart = Math.max(1, ((event.startDate - nowMs) / 86400000L).toInt())
-        "Sắp diễn ra sau $daysStart ngày"
+        val daysStart = FormatHelper.getDaysDifference(nowMs, event.startDate)
+        if (daysStart > 0) "Sắp diễn ra sau $daysStart ngày" else "Bắt đầu hôm nay"
     }
 
     val baseEventColor = try {

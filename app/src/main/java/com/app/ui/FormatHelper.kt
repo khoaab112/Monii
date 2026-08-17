@@ -151,6 +151,78 @@ object FormatHelper {
             "${formatDate(timestamp)} ${formatTime(timestamp)}"
         }
     }
+
+    fun getStartOfDay(timestamp: Long): Long {
+        val cal = Calendar.getInstance().apply {
+            timeInMillis = timestamp
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        return cal.timeInMillis
+    }
+
+    fun getEndOfDay(timestamp: Long): Long {
+        val cal = Calendar.getInstance().apply {
+            timeInMillis = timestamp
+            set(Calendar.HOUR_OF_DAY, 23)
+            set(Calendar.MINUTE, 59)
+            set(Calendar.SECOND, 59)
+            set(Calendar.MILLISECOND, 999)
+        }
+        return cal.timeInMillis
+    }
+
+    fun getDaysDifference(fromMillis: Long, toMillis: Long): Int {
+        val startOfFrom = getStartOfDay(fromMillis)
+        val startOfTo = getStartOfDay(toMillis)
+        return ((startOfTo - startOfFrom) / 86400000L).toInt()
+    }
+
+    fun isEventOngoing(startDate: Long, endDate: Long?, now: Long = System.currentTimeMillis()): Boolean {
+        val startOfDay = getStartOfDay(startDate)
+        val endOfDay = endDate?.let { getEndOfDay(it) }
+        return now >= startOfDay && (endOfDay == null || now <= endOfDay)
+    }
+
+    fun isEventEnded(endDate: Long?, now: Long = System.currentTimeMillis()): Boolean {
+        if (endDate == null) return false
+        val endOfDay = getEndOfDay(endDate)
+        return now > endOfDay
+    }
+
+    fun isEventUpcoming(startDate: Long, now: Long = System.currentTimeMillis()): Boolean {
+        return now < getStartOfDay(startDate)
+    }
+
+    fun localDateToUtcMillis(localMillis: Long): Long {
+        val localCal = Calendar.getInstance().apply { timeInMillis = localMillis }
+        val utcCal = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+            clear()
+            set(
+                localCal.get(Calendar.YEAR),
+                localCal.get(Calendar.MONTH),
+                localCal.get(Calendar.DAY_OF_MONTH),
+                0, 0, 0
+            )
+        }
+        return utcCal.timeInMillis
+    }
+
+    fun utcMillisToLocalStartOfDay(utcMillis: Long): Long {
+        val utcCal = Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = utcMillis }
+        val localCal = Calendar.getInstance().apply {
+            set(Calendar.YEAR, utcCal.get(Calendar.YEAR))
+            set(Calendar.MONTH, utcCal.get(Calendar.MONTH))
+            set(Calendar.DAY_OF_MONTH, utcCal.get(Calendar.DAY_OF_MONTH))
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        return localCal.timeInMillis
+    }
 }
 
 data class FinancialSummary(

@@ -118,15 +118,14 @@ data class EventStatusStyle(
 fun getEventPriority(event: Event, totalSpent: Double, now: Long = System.currentTimeMillis()): Int {
     if (!event.isActive) return 6
 
-    val isUpcoming = now < event.startDate
-    val actualEndTime = event.endDate?.let { it + 86400000L - 1 }
-    val isEnded = actualEndTime != null && now > actualEndTime
+    val isUpcoming = FormatHelper.isEventUpcoming(event.startDate, now)
+    val isEnded = FormatHelper.isEventEnded(event.endDate, now)
     val limit = event.limitAmount ?: 0.0
     val isEndingSoon = !isEnded && !isUpcoming && (
-        (actualEndTime != null && (actualEndTime - now) <= 3 * 86400000L) ||
+        (event.endDate != null && FormatHelper.getDaysDifference(now, event.endDate) <= 3) ||
         (limit > 0 && (totalSpent / limit) >= 0.8)
     )
-    val isStartingSoon = isUpcoming && (event.startDate - now <= 7 * 86400000L)
+    val isStartingSoon = isUpcoming && (FormatHelper.getDaysDifference(now, event.startDate) <= 7)
 
     return when {
         !isEnded && !isUpcoming && !isEndingSoon -> 1
@@ -613,16 +612,17 @@ fun EventManagementScreen(
                             }
                         }
 
-                        val actualEndTime = event.endDate?.let { it + 86400000L - 1 }
+                        val actualEndTime = event.endDate?.let { FormatHelper.getEndOfDay(it) }
+                        val startDay = FormatHelper.getStartOfDay(event.startDate)
                         val targetTimeProgress = if (actualEndTime == null) {
                             0.4f
-                        } else if (now < event.startDate) {
+                        } else if (now < startDay) {
                             0f
                         } else if (now >= actualEndTime) {
                             1f
                         } else {
-                            val totalDuration = (actualEndTime - event.startDate).toFloat()
-                            val elapsed = (now - event.startDate).toFloat()
+                            val totalDuration = (actualEndTime - startDay).toFloat()
+                            val elapsed = (now - startDay).toFloat()
                             if (totalDuration > 0) (elapsed / totalDuration).coerceIn(0f, 1f) else 0f
                         }
 
@@ -710,17 +710,14 @@ fun EventManagementScreen(
                                         // Pill hiển thị thời gian (Dùng eventColor)
                                         val remainingText = if (event.endDate == null) {
                                             "Vô thời hạn"
-                                        } else if (now < event.startDate) {
-                                            val diffMillis = (event.endDate + 86400000L - 1) - now
-                                            val diffDays = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(diffMillis)
-                                            if (diffDays > 0) "Còn $diffDays ngày" else "Chưa diễn ra"
+                                        } else if (FormatHelper.isEventUpcoming(event.startDate, now)) {
+                                            val diffDays = FormatHelper.getDaysDifference(now, event.startDate)
+                                            if (diffDays > 0) "Sắp diễn ra sau $diffDays ngày" else "Bắt đầu hôm nay"
+                                        } else if (FormatHelper.isEventEnded(event.endDate, now)) {
+                                            "Đã hết hạn"
                                         } else {
-                                            val actualEndTimeVal = event.endDate + 86400000L - 1
-                                            val diffMillis = actualEndTimeVal - now
-                                            val diffDays = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(diffMillis)
-                                            if (diffMillis < 0) {
-                                                "Đã hết hạn"
-                                            } else if (diffDays == 0L) {
+                                            val diffDays = FormatHelper.getDaysDifference(now, event.endDate)
+                                            if (diffDays == 0) {
                                                 "Hôm nay hết hạn"
                                             } else {
                                                 "Còn $diffDays ngày"
@@ -1163,8 +1160,8 @@ fun EventManagementScreen(
         val editingEvent = eventToEdit
         var name by remember { mutableStateOf(editingEvent?.name ?: "") }
         var description by remember { mutableStateOf(editingEvent?.description ?: "") }
-        var startDate by remember { mutableStateOf(editingEvent?.startDate ?: System.currentTimeMillis()) }
-        var endDate by remember { mutableStateOf(editingEvent?.endDate) }
+        var startDate by remember { mutableStateOf(editingEvent?.startDate ?: FormatHelper.getStartOfDay(System.currentTimeMillis())) }
+        var endDate by remember { mutableStateOf(editingEvent?.endDate?.let { FormatHelper.getStartOfDay(it) }) }
         var limitAmountStr by remember { mutableStateOf(editingEvent?.limitAmount?.let { String.format(java.util.Locale.US, "%,d", it.toLong()).replace(',', '.') } ?: "") }
         var selectedColor by remember { mutableStateOf(editingEvent?.colorHex ?: "#FF9800") }
 
@@ -1177,15 +1174,21 @@ fun EventManagementScreen(
         var showStartDatePicker by remember { mutableStateOf(false) }
         var showEndDatePicker by remember { mutableStateOf(false) }
 
-        val startDateState = rememberDatePickerState(initialSelectedDateMillis = startDate)
-        val endDateState = rememberDatePickerState(initialSelectedDateMillis = endDate ?: System.currentTimeMillis())
+        val startDateState = rememberDatePickerState(
+            initialSelectedDateMillis = FormatHelper.localDateToUtcMillis(startDate)
+        )
+        val endDateState = rememberDatePickerState(
+            initialSelectedDateMillis = FormatHelper.localDateToUtcMillis(endDate ?: System.currentTimeMillis())
+        )
 
         if (showStartDatePicker) {
             DatePickerDialog(
                 onDismissRequest = { showStartDatePicker = false },
                 confirmButton = {
                     TextButton(onClick = {
-                        startDateState.selectedDateMillis?.let { startDate = it }
+                        startDateState.selectedDateMillis?.let {
+                            startDate = FormatHelper.utcMillisToLocalStartOfDay(it)
+                        }
                         showStartDatePicker = false
                     }) { Text("OK") }
                 },
@@ -1202,7 +1205,9 @@ fun EventManagementScreen(
                 onDismissRequest = { showEndDatePicker = false },
                 confirmButton = {
                     TextButton(onClick = {
-                        endDateState.selectedDateMillis?.let { endDate = it }
+                        endDateState.selectedDateMillis?.let {
+                            endDate = FormatHelper.utcMillisToLocalStartOfDay(it)
+                        }
                         showEndDatePicker = false
                     }) { Text("OK") }
                 },
@@ -1256,8 +1261,11 @@ fun EventManagementScreen(
                                 nameError = "Vui lòng nhập tên sự kiện!"
                                 return@Button
                             }
-                            if (endDate != null && endDate!! < startDate) {
-                                viewModel.showWarningNotification("Ngày kết thúc phải sau ngày bắt đầu!")
+                            val startDay = FormatHelper.getStartOfDay(startDate)
+                            val endDay = endDate?.let { FormatHelper.getStartOfDay(it) }
+
+                            if (endDay != null && endDay < startDay) {
+                                viewModel.showWarningNotification("Ngày kết thúc phải cùng ngày hoặc sau ngày bắt đầu!")
                                 return@Button
                             }
                             val limit = limitAmountStr.replace(".", "").toDoubleOrNull()
@@ -1266,8 +1274,8 @@ fun EventManagementScreen(
                                 viewModel.updateEvent(editingEvent.copy(
                                     name = name,
                                     description = description,
-                                    startDate = startDate,
-                                    endDate = endDate,
+                                    startDate = startDay,
+                                    endDate = endDay,
                                     limitAmount = limit,
                                     colorHex = selectedColor
                                 ))
@@ -1276,8 +1284,8 @@ fun EventManagementScreen(
                                 viewModel.addEvent(
                                     name = name,
                                     description = description,
-                                    startDate = startDate,
-                                    endDate = endDate,
+                                    startDate = startDay,
+                                    endDate = endDay,
                                     limitAmount = limit,
                                     colorHex = selectedColor
                                 )
