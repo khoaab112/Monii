@@ -72,6 +72,7 @@ fun DashboardScreen(
     val events by viewModel.allEvents.collectAsState()
     val debts by viewModel.allDebts.collectAsState()
     var eventToView by remember { mutableStateOf<com.app.data.Event?>(null) }
+    var editingTransaction by remember { mutableStateOf<Transaction?>(null) }
     val context = LocalContext.current
     val bellGifImageLoader = remember(context) {
         ImageLoader.Builder(context)
@@ -630,18 +631,18 @@ fun DashboardScreen(
 
         // --- Events Widget ---
         val nowMs = System.currentTimeMillis()
-        val threeDaysMs = 3 * 86400000L
         val activeOrUpcomingEvents = remember(events, nowMs) {
             events
                 .filter { event ->
-                    val isOngoing = nowMs >= event.startDate && (event.endDate == null || nowMs <= event.endDate + 86400000L - 1)
-                    val isUpcomingIn3Days = event.startDate > nowMs && (event.startDate - nowMs) <= threeDaysMs
-                    isOngoing || isUpcomingIn3Days
+                    event.isActive && (
+                        FormatHelper.isEventOngoing(event.startDate, event.endDate, nowMs) ||
+                        (FormatHelper.isEventUpcoming(event.startDate, nowMs) && FormatHelper.getDaysDifference(nowMs, event.startDate) <= 3)
+                    )
                 }
                 .sortedWith(
                     Comparator { e1, e2 ->
-                        val isOngoing1 = nowMs >= e1.startDate && (e1.endDate == null || nowMs <= e1.endDate + 86400000L - 1)
-                        val isOngoing2 = nowMs >= e2.startDate && (e2.endDate == null || nowMs <= e2.endDate + 86400000L - 1)
+                        val isOngoing1 = FormatHelper.isEventOngoing(e1.startDate, e1.endDate, nowMs)
+                        val isOngoing2 = FormatHelper.isEventOngoing(e2.startDate, e2.endDate, nowMs)
 
                         when {
                             // 1. Ongoing events always take precedence over upcoming events
@@ -650,14 +651,16 @@ fun DashboardScreen(
                             
                             // 2. Both Ongoing: sort by endDate ascending (events ending soonest appear first)
                             isOngoing1 && isOngoing2 -> {
-                                val end1 = e1.endDate ?: Long.MAX_VALUE
-                                val end2 = e2.endDate ?: Long.MAX_VALUE
+                                val end1 = e1.endDate?.let { FormatHelper.getEndOfDay(it) } ?: Long.MAX_VALUE
+                                val end2 = e2.endDate?.let { FormatHelper.getEndOfDay(it) } ?: Long.MAX_VALUE
                                 end1.compareTo(end2)
                             }
 
                             // 3. Both Upcoming: sort by startDate ascending (events starting soonest appear first)
                             else -> {
-                                e1.startDate.compareTo(e2.startDate)
+                                val start1 = FormatHelper.getStartOfDay(e1.startDate)
+                                val start2 = FormatHelper.getStartOfDay(e2.startDate)
+                                start1.compareTo(start2)
                             }
                         }
                     }
@@ -1263,7 +1266,7 @@ fun DashboardScreen(
 
                     // Rủi ro 2: Sự kiện vượt ngân sách (Active Event Risk)
                     val activeEvents = events.filter { 
-                        it.startDate <= now && (it.endDate == null || it.endDate!! >= now) && (it.limitAmount ?: 0.0) > 0.0 
+                        it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, now) && (it.limitAmount ?: 0.0) > 0.0 
                     }
                     activeEvents.forEach { ev ->
                         val limit = ev.limitAmount!!
@@ -1278,9 +1281,11 @@ fun DashboardScreen(
                                 )
                             )
                         } else {
-                            val duration = if (ev.endDate != null && ev.endDate!! > ev.startDate) (ev.endDate!! - ev.startDate).toDouble() else 0.0
+                            val actualStart = FormatHelper.getStartOfDay(ev.startDate)
+                            val actualEnd = ev.endDate?.let { FormatHelper.getEndOfDay(it) }
+                            val duration = if (actualEnd != null && actualEnd > actualStart) (actualEnd - actualStart).toDouble() else 0.0
                             if (duration > 0) {
-                                val timeRatio = (now - ev.startDate).toDouble() / duration
+                                val timeRatio = ((now - actualStart).toDouble() / duration).coerceIn(0.0, 1.0)
                                 val spentRatio = spent / limit
                                 if (timeRatio <= 0.5 && spentRatio >= 0.8) {
                                     riskAlerts.add(
@@ -1699,31 +1704,103 @@ fun DashboardScreen(
                 }
 
                 if (eventTransactions.isNotEmpty()) {
-                    Text("Lịch sử giao dịch liên quan:", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                    val categoriesList by viewModel.categoriesList.collectAsState()
+                    Text("Lịch sử giao dịch liên quan (${eventTransactions.size}):", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
                     androidx.compose.foundation.lazy.LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(eventTransactions.sortedByDescending { it.timestamp }) { tx ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                            val isTransfer = tx.type == "TRANSFER"
+                            val cat = categoriesList.find { it.name == tx.categoryName }
+                            val catColor = if (isTransfer) Color(0xFF2196F3) else (cat?.let { FormatHelper.parseColor(it.colorHex) } ?: FormatHelper.parseColor(tx.categoryColor))
+                            val catIcon = if (isTransfer) "swap_horiz" else (cat?.iconName ?: tx.categoryIcon)
+
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .clickable { editingTransaction = tx },
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                shape = RoundedCornerShape(14.dp)
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(tx.categoryName, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                                    Text(FormatHelper.formatDate(tx.timestamp), fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    // Category Icon Badge
+                                    Box(
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .clip(CircleShape)
+                                            .background(catColor.copy(alpha = 0.15f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isTransfer) Icons.AutoMirrored.Filled.CompareArrows else IconMapper.getIconByName(catIcon),
+                                            contentDescription = tx.categoryName,
+                                            tint = catColor,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    // Info Column
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = tx.categoryName,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        val subInfo = buildString {
+                                            append(tx.walletName)
+                                            if (tx.note.isNotBlank()) {
+                                                append(" • ")
+                                                append(tx.note)
+                                            }
+                                        }
+                                        Text(
+                                            text = subInfo,
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${FormatHelper.formatTime(tx.timestamp)} ${FormatHelper.formatDate(tx.timestamp)}",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.outline
+                                        )
+                                    }
+
+                                    // Amount & Edit hint
+                                    val isAdjustmentDecrease = tx.type == "ADJUSTMENT" && !tx.note.contains("tăng")
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "${if (tx.type == "EXPENSE" || isAdjustmentDecrease) "-" else "+"}${FormatHelper.formatVND(tx.amount)}",
+                                            color = if (tx.type == "EXPENSE" || isAdjustmentDecrease) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.sp
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Default.Edit,
+                                            contentDescription = "Sửa giao dịch",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
                                 }
-                                val isAdjustmentDecrease = tx.type == "ADJUSTMENT" && !tx.note.contains("tăng")
-                                Text(
-                                    text = "${if (tx.type == "EXPENSE" || isAdjustmentDecrease) "-" else "+"}${FormatHelper.formatVND(tx.amount)}",
-                                    color = if (tx.type == "EXPENSE" || isAdjustmentDecrease) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp
-                                )
                             }
-                            HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         }
                     }
                 } else {
@@ -1731,6 +1808,22 @@ fun DashboardScreen(
                 }
             }
         }
+    }
+
+    if (editingTransaction != null) {
+        val categoriesList by viewModel.categoriesList.collectAsState()
+        val walletsList by viewModel.allWallets.collectAsState()
+        EditTransactionDialog(
+            tx = editingTransaction!!,
+            categoriesList = categoriesList,
+            walletsList = walletsList,
+            eventsList = events,
+            onDismiss = { editingTransaction = null },
+            onSave = { updatedTx ->
+                viewModel.updateTransaction(updatedTx)
+                editingTransaction = null
+            }
+        )
     }
 }
 
@@ -1913,15 +2006,15 @@ private fun DashboardEventCard(
     val offsetYPx = remember(density) { with(density) { 35.dp.toPx() } }
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
 
-    val isOngoing = nowMs >= event.startDate && (event.endDate == null || nowMs <= event.endDate + 86400000L - 1)
+    val isOngoing = FormatHelper.isEventOngoing(event.startDate, event.endDate, nowMs)
     val daysText = if (isOngoing) {
         if (event.endDate != null) {
-            val daysLeft = Math.max(1, ((event.endDate - nowMs) / 86400000L).toInt())
-            "Còn $daysLeft ngày"
+            val diffDays = FormatHelper.getDaysDifference(nowMs, event.endDate)
+            if (diffDays == 0) "Hôm nay hết hạn" else "Còn $diffDays ngày"
         } else "Đang diễn ra"
     } else {
-        val daysStart = Math.max(1, ((event.startDate - nowMs) / 86400000L).toInt())
-        "Sắp diễn ra sau $daysStart ngày"
+        val daysStart = FormatHelper.getDaysDifference(nowMs, event.startDate)
+        if (daysStart > 0) "Sắp diễn ra sau $daysStart ngày" else "Bắt đầu hôm nay"
     }
 
     val baseEventColor = try {

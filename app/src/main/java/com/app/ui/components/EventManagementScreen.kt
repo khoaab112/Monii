@@ -19,6 +19,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.zIndex
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -45,8 +48,12 @@ import coil.compose.rememberAsyncImagePainter
 import coil.decode.SvgDecoder
 import coil.request.ImageRequest
 import com.app.data.Event
+import com.app.data.Transaction
 import com.app.ui.FinanceViewModel
 import com.app.ui.FormatHelper
+import com.app.ui.IconMapper
+import com.app.ui.screens.EditTransactionDialog
+import androidx.compose.ui.text.style.TextOverflow
 import java.util.*
 
 @Composable
@@ -108,39 +115,54 @@ data class EventStatusStyle(
     val text: String,
     val dotColor: Color,
     val backgroundColor: Color,
-    val textColor: Color
+    val textColor: Color,
+    val borderColor: Color? = null
 )
 
 fun getEventPriority(event: Event, totalSpent: Double, now: Long = System.currentTimeMillis()): Int {
-    val isUpcoming = now < event.startDate
-    val actualEndTime = event.endDate?.let { it + 86400000L - 1 }
-    val isEnded = actualEndTime != null && now > actualEndTime
+    val isEnded = FormatHelper.isEventEnded(event.endDate, now)
+    if (isEnded) return 5
+
+    if (!event.isActive) return 6
+
+    val isUpcoming = FormatHelper.isEventUpcoming(event.startDate, now)
     val limit = event.limitAmount ?: 0.0
-    val isEndingSoon = !isEnded && !isUpcoming && (
-        (actualEndTime != null && (actualEndTime - now) <= 3 * 86400000L) ||
+    val isEndingSoon = !isUpcoming && (
+        (event.endDate != null && FormatHelper.getDaysDifference(now, event.endDate) <= 3) ||
         (limit > 0 && (totalSpent / limit) >= 0.8)
     )
-    val isStartingSoon = isUpcoming && (event.startDate - now <= 7 * 86400000L)
+    val isStartingSoon = isUpcoming && (FormatHelper.getDaysDifference(now, event.startDate) <= 7)
 
     return when {
-        // Priority 1: Sự kiện đang diễn ra
-        !isEnded && !isUpcoming && !isEndingSoon -> 1
-        
-        // Priority 2: Sự kiện sắp kết thúc
-        !isEnded && !isUpcoming && isEndingSoon -> 2
-        
-        // Priority 3: Sự kiện chuẩn bị bắt đầu (trong vòng 7 ngày)
+        !isUpcoming && !isEndingSoon -> 1
+        !isUpcoming && isEndingSoon -> 2
         isStartingSoon -> 3
-        
-        // Priority 4: Sự kiện chưa đến hạn bắt đầu (thời điểm xa hơn > 7 ngày)
         isUpcoming -> 4
-        
-        // Priority 5: Sự kiện đã kết thúc
         else -> 5
     }
 }
 
 fun getEventStatusStyle(event: Event, totalSpent: Double, now: Long = System.currentTimeMillis()): EventStatusStyle {
+    val isEnded = FormatHelper.isEventEnded(event.endDate, now)
+    if (isEnded) {
+        return EventStatusStyle(
+            text = "Đã kết thúc",
+            dotColor = Color.White,
+            backgroundColor = Color(0xFF757575),
+            textColor = Color.White
+        )
+    }
+
+    if (!event.isActive) {
+        return EventStatusStyle(
+            text = "Dừng",
+            dotColor = Color(0xFFFF1744),
+            backgroundColor = Color.White,
+            textColor = Color(0xFFFF1744),
+            borderColor = Color(0xFFFF1744)
+        )
+    }
+
     val priority = getEventPriority(event, totalSpent, now)
 
     return when (priority) {
@@ -179,11 +201,18 @@ fun getEventStatusStyle(event: Event, totalSpent: Double, now: Long = System.cur
 
 @Composable
 fun EventStatusChip(statusStyle: EventStatusStyle) {
+    val modifier = Modifier
+        .clip(RoundedCornerShape(50))
+        .background(statusStyle.backgroundColor)
+        .then(
+            if (statusStyle.borderColor != null) {
+                Modifier.border(1.dp, statusStyle.borderColor, RoundedCornerShape(50))
+            } else Modifier
+        )
+        .padding(horizontal = 10.dp, vertical = 5.dp)
+
     Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(statusStyle.backgroundColor)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -263,6 +292,20 @@ fun EventManagementScreen(
     var eventToDelete by remember { mutableStateOf<Event?>(null) }
     var eventToView by remember { mutableStateOf<Event?>(null) }
     var showBottomSheetEvent by remember { mutableStateOf<Event?>(null) }
+    var editingTransaction by remember { mutableStateOf<Transaction?>(null) }
+
+    var isReorderMode by remember { mutableStateOf(false) }
+    var reorderListState by remember(events) { mutableStateOf(events.sortedBy { it.displayOrder }) }
+    var draggedIndex by remember { mutableStateOf<Int?>(null) }
+    var driftY by remember { mutableFloatStateOf(0f) }
+    fun onDragReleased() {
+        draggedIndex = null
+        driftY = 0f
+    }
+
+    LaunchedEffect(events) {
+        reorderListState = events.sortedBy { it.displayOrder }
+    }
 
     val sortedEvents = remember(events, transactions) {
         val now = System.currentTimeMillis()
@@ -271,6 +314,8 @@ fun EventManagementScreen(
                 val eventTxs = transactions.filter { it.eventId == event.id }
                 val totalSpent = eventTxs.filter { it.type == "EXPENSE" }.sumOf { it.amount }
                 getEventPriority(event, totalSpent, now)
+            }.thenBy { event ->
+                event.displayOrder
             }.thenBy { event ->
                 event.startDate
             }
@@ -304,7 +349,7 @@ fun EventManagementScreen(
                 TopAppBar(
                     title = {
                         Text(
-                            text = "SỰ KIỆN",
+                            text = if (isReorderMode) "SẮP XẾP SỰ KIỆN" else "SỰ KIỆN",
                             fontWeight = FontWeight.Black,
                             fontSize = 20.sp,
                             letterSpacing = 0.5.sp,
@@ -312,12 +357,32 @@ fun EventManagementScreen(
                         )
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
+                        IconButton(onClick = {
+                            if (isReorderMode) isReorderMode = false else onBack()
+                        }) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = "Quay lại",
                                 tint = MaterialTheme.colorScheme.onSurface
                             )
+                        }
+                    },
+                    actions = {
+                        if (isReorderMode) {
+                            TextButton(onClick = {
+                                viewModel.reorderEvents(reorderListState)
+                                isReorderMode = false
+                            }) {
+                                Text("Xong", fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32), fontSize = 16.sp)
+                            }
+                        } else if (events.isNotEmpty()) {
+                            IconButton(onClick = { isReorderMode = true }) {
+                                Icon(
+                                    imageVector = Icons.Default.SwapVert,
+                                    contentDescription = "Sắp xếp sự kiện",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -327,17 +392,186 @@ fun EventManagementScreen(
             }
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { showAddEventDialog = true },
-                containerColor = Color(0xFF00E676),
-                shape = CircleShape
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Thêm sự kiện", tint = Color.White)
+            if (!isReorderMode) {
+                FloatingActionButton(
+                    onClick = { showAddEventDialog = true },
+                    containerColor = Color(0xFF00E676),
+                    shape = CircleShape
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "Thêm sự kiện", tint = Color.White)
+                }
             }
         }
     ) { paddingValues ->
         Column(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
-            if (events.isEmpty()) {
+            if (isReorderMode) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    itemsIndexed(
+                        items = reorderListState,
+                        key = { _, event -> event.id }
+                    ) { index, event ->
+                        val eventTransactions = remember(event.id, transactions) {
+                            transactions.filter { it.eventId == event.id }
+                        }
+                        val totalSpent = remember(eventTransactions) {
+                            eventTransactions.filter { it.type == "EXPENSE" }.sumOf { it.amount }
+                        }
+                        val limit = event.limitAmount ?: 0.0
+                        val spentPercentage = if (limit > 0) ((totalSpent / limit) * 100).coerceIn(0.0, 100.0) else 0.0
+                        val eventColor = remember(event.colorHex) {
+                            try { Color(android.graphics.Color.parseColor(event.colorHex)) } catch (e: Exception) { Color(0xFFFF9800) }
+                        }
+
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .animateItem()
+                                .staggeredEntrance(index + 1, "reorder_event_${event.id}", seenKeys)
+                                .graphicsLayer {
+                                    val isDragged = draggedIndex == index
+                                    translationY = if (isDragged) driftY else 0f
+                                    scaleX = if (isDragged) 1.03f else 1f
+                                    scaleY = if (isDragged) 1.03f else 1f
+                                    shadowElevation = if (isDragged) 16.dp.toPx() else 2.dp.toPx()
+                                    shape = RoundedCornerShape(16.dp)
+                                    clip = false
+                                }
+                                .zIndex(if (draggedIndex == index) 10f else 1f),
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(16.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                // Vùng icon đổi thành vòng tròn phần trăm % tiền đã chi theo Ảnh
+                                Box(
+                                    modifier = Modifier.size(46.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    val progressVal = (spentPercentage / 100.0).toFloat().coerceIn(0.05f, 1f)
+                                    CircularProgressIndicator(
+                                        progress = { progressVal },
+                                        modifier = Modifier.fillMaxSize(),
+                                        color = eventColor,
+                                        trackColor = eventColor.copy(alpha = 0.2f),
+                                        strokeWidth = 4.dp,
+                                        strokeCap = StrokeCap.Round
+                                    )
+                                    Text(
+                                        text = "${spentPercentage.toInt()}%",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = eventColor
+                                    )
+                                }
+
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = event.name,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    val startStr = FormatHelper.formatDate(event.startDate)
+                                    val endStr = event.endDate?.let { FormatHelper.formatDate(it) } ?: "Không giới hạn"
+                                    Text(
+                                        text = "$startStr - $endStr",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (index > 0) {
+                                        IconButton(
+                                            onClick = {
+                                                val mutableList = reorderListState.toMutableList()
+                                                val item = mutableList.removeAt(index)
+                                                mutableList.add(index - 1, item)
+                                                reorderListState = mutableList
+                                            }
+                                        ) {
+                                            Icon(Icons.Default.ArrowUpward, contentDescription = "Lên", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                    if (index < reorderListState.lastIndex) {
+                                        IconButton(
+                                            onClick = {
+                                                val mutableList = reorderListState.toMutableList()
+                                                val item = mutableList.removeAt(index)
+                                                mutableList.add(index + 1, item)
+                                                reorderListState = mutableList
+                                            }
+                                        ) {
+                                            Icon(Icons.Default.ArrowDownward, contentDescription = "Xuống", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(start = 4.dp)
+                                            .pointerInput(index) {
+                                                detectDragGestures(
+                                                    onDragStart = {
+                                                        draggedIndex = index
+                                                        driftY = 0f
+                                                    },
+                                                    onDragEnd = { onDragReleased() },
+                                                    onDragCancel = { onDragReleased() },
+                                                    onDrag = { change, dragAmount ->
+                                                        change.consume()
+                                                        val targetIdx = draggedIndex
+                                                        if (targetIdx != null) {
+                                                            val itemHeightPx = 74.dp.toPx()
+                                                            val minAllowedDrift = if (targetIdx > 0) -itemHeightPx * 1.2f else 0f
+                                                            val maxAllowedDrift = if (targetIdx < reorderListState.lastIndex) itemHeightPx * 1.2f else 0f
+                                                            driftY = (driftY + dragAmount.y).coerceIn(minAllowedDrift, maxAllowedDrift)
+
+                                                            if (driftY > itemHeightPx * 0.5f && targetIdx < reorderListState.lastIndex) {
+                                                                val mutableList = reorderListState.toMutableList()
+                                                                val next = mutableList[targetIdx + 1]
+                                                                mutableList[targetIdx + 1] = mutableList[targetIdx]
+                                                                mutableList[targetIdx] = next
+                                                                reorderListState = mutableList
+                                                                draggedIndex = targetIdx + 1
+                                                                driftY -= itemHeightPx
+                                                            } else if (driftY < -itemHeightPx * 0.5f && targetIdx > 0) {
+                                                                val mutableList = reorderListState.toMutableList()
+                                                                val prev = mutableList[targetIdx - 1]
+                                                                mutableList[targetIdx - 1] = mutableList[targetIdx]
+                                                                mutableList[targetIdx] = prev
+                                                                reorderListState = mutableList
+                                                                draggedIndex = targetIdx - 1
+                                                                driftY += itemHeightPx
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                            .padding(6.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DragHandle,
+                                            contentDescription = "Kéo xếp",
+                                            tint = if (draggedIndex == index) Color(0xFF5C54E5) else Color(0xFFB0BEC5),
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (events.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Image(
@@ -395,16 +629,17 @@ fun EventManagementScreen(
                             }
                         }
 
-                        val actualEndTime = event.endDate?.let { it + 86400000L - 1 }
+                        val actualEndTime = event.endDate?.let { FormatHelper.getEndOfDay(it) }
+                        val startDay = FormatHelper.getStartOfDay(event.startDate)
                         val targetTimeProgress = if (actualEndTime == null) {
                             0.4f
-                        } else if (now < event.startDate) {
+                        } else if (now < startDay) {
                             0f
                         } else if (now >= actualEndTime) {
                             1f
                         } else {
-                            val totalDuration = (actualEndTime - event.startDate).toFloat()
-                            val elapsed = (now - event.startDate).toFloat()
+                            val totalDuration = (actualEndTime - startDay).toFloat()
+                            val elapsed = (now - startDay).toFloat()
                             if (totalDuration > 0) (elapsed / totalDuration).coerceIn(0f, 1f) else 0f
                         }
 
@@ -492,17 +727,14 @@ fun EventManagementScreen(
                                         // Pill hiển thị thời gian (Dùng eventColor)
                                         val remainingText = if (event.endDate == null) {
                                             "Vô thời hạn"
-                                        } else if (now < event.startDate) {
-                                            val diffMillis = (event.endDate + 86400000L - 1) - now
-                                            val diffDays = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(diffMillis)
-                                            if (diffDays > 0) "Còn $diffDays ngày" else "Chưa diễn ra"
+                                        } else if (FormatHelper.isEventUpcoming(event.startDate, now)) {
+                                            val diffDays = FormatHelper.getDaysDifference(now, event.startDate)
+                                            if (diffDays > 0) "Sắp diễn ra sau $diffDays ngày" else "Bắt đầu hôm nay"
+                                        } else if (FormatHelper.isEventEnded(event.endDate, now)) {
+                                            "Đã hết hạn"
                                         } else {
-                                            val actualEndTimeVal = event.endDate + 86400000L - 1
-                                            val diffMillis = actualEndTimeVal - now
-                                            val diffDays = java.util.concurrent.TimeUnit.MILLISECONDS.toDays(diffMillis)
-                                            if (diffMillis < 0) {
-                                                "Đã hết hạn"
-                                            } else if (diffDays == 0L) {
+                                            val diffDays = FormatHelper.getDaysDifference(now, event.endDate)
+                                            if (diffDays == 0) {
                                                 "Hôm nay hết hạn"
                                             } else {
                                                 "Còn $diffDays ngày"
@@ -655,6 +887,38 @@ fun EventManagementScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                // 0. Bật/Tắt kích hoạt sự kiện (Chỉnh sửa text thành Tắt sự kiện)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable {
+                            val target = event
+                            showBottomSheetEvent = null
+                            viewModel.updateEvent(target.copy(isActive = !target.isActive))
+                            viewModel.showSuccessNotification(
+                                if (target.isActive) "Đã tắt sự kiện '${target.name}'"
+                                else "Đã kích hoạt sự kiện '${target.name}'"
+                            )
+                        }
+                        .padding(vertical = 12.dp, horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = if (event.isActive) Icons.Default.PauseCircle else Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = if (event.isActive) Color(0xFFE65100) else Color(0xFF2E7D32),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = if (event.isActive) "Tắt sự kiện" else "Kích hoạt sự kiện",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (event.isActive) Color(0xFFE65100) else Color(0xFF2E7D32)
+                    )
+                }
+
                 // 1. Xem chi tiết & danh sách giao dịch
                 Row(
                     modifier = Modifier
@@ -870,30 +1134,99 @@ fun EventManagementScreen(
                     )
 
                     if (eventTransactions.isNotEmpty()) {
+                        val categoriesList by viewModel.categoriesList.collectAsState()
                         Column(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             eventTransactions.sortedByDescending { it.timestamp }.forEach { tx ->
-                                Row(
+                                val isTransfer = tx.type == "TRANSFER"
+                                val cat = categoriesList.find { it.name == tx.categoryName }
+                                val catColor = if (isTransfer) Color(0xFF2196F3) else (cat?.let { FormatHelper.parseColor(it.colorHex) } ?: FormatHelper.parseColor(tx.categoryColor))
+                                val catIcon = if (isTransfer) "swap_horiz" else (cat?.iconName ?: tx.categoryIcon)
+
+                                Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable { editingTransaction = tx },
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(14.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(tx.categoryName, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                        Text(FormatHelper.formatDate(tx.timestamp), fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        // Category Icon Badge
+                                        Box(
+                                            modifier = Modifier
+                                                .size(38.dp)
+                                                .clip(CircleShape)
+                                                .background(catColor.copy(alpha = 0.15f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isTransfer) Icons.AutoMirrored.Filled.CompareArrows else IconMapper.getIconByName(catIcon),
+                                                contentDescription = tx.categoryName,
+                                                tint = catColor,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        // Info Column
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = tx.categoryName,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            val subInfo = buildString {
+                                                append(tx.walletName)
+                                                if (tx.note.isNotBlank()) {
+                                                    append(" • ")
+                                                    append(tx.note)
+                                                }
+                                            }
+                                            Text(
+                                                text = subInfo,
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${FormatHelper.formatTime(tx.timestamp)} ${FormatHelper.formatDate(tx.timestamp)}",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.outline
+                                            )
+                                        }
+
+                                        // Amount & Edit hint
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "${if (tx.type == "EXPENSE") "-" else "+"}${FormatHelper.formatVND(tx.amount)}",
+                                                color = if (tx.type == "EXPENSE") MaterialTheme.colorScheme.error else Color(0xFF00E676),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
+                                            )
+                                            Icon(
+                                                imageVector = Icons.Default.Edit,
+                                                contentDescription = "Sửa giao dịch",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
                                     }
-                                    Text(
-                                        text = "${if (tx.type == "EXPENSE") "-" else "+"}${FormatHelper.formatVND(tx.amount)}",
-                                        color = if (tx.type == "EXPENSE") MaterialTheme.colorScheme.error else Color(0xFF00E676),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp
-                                    )
                                 }
-                                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                             }
                         }
                     } else {
@@ -909,12 +1242,28 @@ fun EventManagementScreen(
         }
     }
 
+    if (editingTransaction != null) {
+        val categoriesList by viewModel.categoriesList.collectAsState()
+        val walletsList by viewModel.allWallets.collectAsState()
+        EditTransactionDialog(
+            tx = editingTransaction!!,
+            categoriesList = categoriesList,
+            walletsList = walletsList,
+            eventsList = events,
+            onDismiss = { editingTransaction = null },
+            onSave = { updatedTx ->
+                viewModel.updateTransaction(updatedTx)
+                editingTransaction = null
+            }
+        )
+    }
+
     if (showAddEventDialog || eventToEdit != null) {
         val editingEvent = eventToEdit
         var name by remember { mutableStateOf(editingEvent?.name ?: "") }
         var description by remember { mutableStateOf(editingEvent?.description ?: "") }
-        var startDate by remember { mutableStateOf(editingEvent?.startDate ?: System.currentTimeMillis()) }
-        var endDate by remember { mutableStateOf(editingEvent?.endDate) }
+        var startDate by remember { mutableStateOf(editingEvent?.startDate ?: FormatHelper.getStartOfDay(System.currentTimeMillis())) }
+        var endDate by remember { mutableStateOf(editingEvent?.endDate?.let { FormatHelper.getStartOfDay(it) }) }
         var limitAmountStr by remember { mutableStateOf(editingEvent?.limitAmount?.let { String.format(java.util.Locale.US, "%,d", it.toLong()).replace(',', '.') } ?: "") }
         var selectedColor by remember { mutableStateOf(editingEvent?.colorHex ?: "#FF9800") }
 
@@ -927,15 +1276,21 @@ fun EventManagementScreen(
         var showStartDatePicker by remember { mutableStateOf(false) }
         var showEndDatePicker by remember { mutableStateOf(false) }
 
-        val startDateState = rememberDatePickerState(initialSelectedDateMillis = startDate)
-        val endDateState = rememberDatePickerState(initialSelectedDateMillis = endDate ?: System.currentTimeMillis())
+        val startDateState = rememberDatePickerState(
+            initialSelectedDateMillis = FormatHelper.localDateToUtcMillis(startDate)
+        )
+        val endDateState = rememberDatePickerState(
+            initialSelectedDateMillis = FormatHelper.localDateToUtcMillis(endDate ?: System.currentTimeMillis())
+        )
 
         if (showStartDatePicker) {
             DatePickerDialog(
                 onDismissRequest = { showStartDatePicker = false },
                 confirmButton = {
                     TextButton(onClick = {
-                        startDateState.selectedDateMillis?.let { startDate = it }
+                        startDateState.selectedDateMillis?.let {
+                            startDate = FormatHelper.utcMillisToLocalStartOfDay(it)
+                        }
                         showStartDatePicker = false
                     }) { Text("OK") }
                 },
@@ -952,7 +1307,9 @@ fun EventManagementScreen(
                 onDismissRequest = { showEndDatePicker = false },
                 confirmButton = {
                     TextButton(onClick = {
-                        endDateState.selectedDateMillis?.let { endDate = it }
+                        endDateState.selectedDateMillis?.let {
+                            endDate = FormatHelper.utcMillisToLocalStartOfDay(it)
+                        }
                         showEndDatePicker = false
                     }) { Text("OK") }
                 },
@@ -1006,8 +1363,11 @@ fun EventManagementScreen(
                                 nameError = "Vui lòng nhập tên sự kiện!"
                                 return@Button
                             }
-                            if (endDate != null && endDate!! < startDate) {
-                                viewModel.showWarningNotification("Ngày kết thúc phải sau ngày bắt đầu!")
+                            val startDay = FormatHelper.getStartOfDay(startDate)
+                            val endDay = endDate?.let { FormatHelper.getStartOfDay(it) }
+
+                            if (endDay != null && endDay < startDay) {
+                                viewModel.showWarningNotification("Ngày kết thúc phải cùng ngày hoặc sau ngày bắt đầu!")
                                 return@Button
                             }
                             val limit = limitAmountStr.replace(".", "").toDoubleOrNull()
@@ -1016,8 +1376,8 @@ fun EventManagementScreen(
                                 viewModel.updateEvent(editingEvent.copy(
                                     name = name,
                                     description = description,
-                                    startDate = startDate,
-                                    endDate = endDate,
+                                    startDate = startDay,
+                                    endDate = endDay,
                                     limitAmount = limit,
                                     colorHex = selectedColor
                                 ))
@@ -1026,8 +1386,8 @@ fun EventManagementScreen(
                                 viewModel.addEvent(
                                     name = name,
                                     description = description,
-                                    startDate = startDate,
-                                    endDate = endDate,
+                                    startDate = startDay,
+                                    endDate = endDay,
                                     limitAmount = limit,
                                     colorHex = selectedColor
                                 )

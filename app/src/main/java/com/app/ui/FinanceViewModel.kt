@@ -507,21 +507,26 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 repository.allWallets.first()
+                loadCategories()
+                loadSecuritySettings()
+                loadNotificationSettings()
+                processRecurringTransactions()
+                processRecurringBudgets()
             } catch (e: Exception) {
                 e.printStackTrace()
+            } finally {
+                kotlinx.coroutines.delay(300)
+                _isLoadingSettings.value = false
             }
-            loadCategories()
-            loadSecuritySettings()
-            loadNotificationSettings()
-            processRecurringTransactions()
-            processRecurringBudgets()
-            kotlinx.coroutines.delay(600)
-            _isLoadingSettings.value = false
 
             // Auto-trigger background cloud sync if enabled on app startup
-            if (_isCloudSyncEnabled.value) {
-                com.app.service.CloudSyncWorker.setupPeriodicSync(getApplication())
-                triggerSilentCloudSync()
+            try {
+                if (_isCloudSyncEnabled.value) {
+                    com.app.service.CloudSyncWorker.setupPeriodicSync(getApplication())
+                    triggerSilentCloudSync()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
 
@@ -908,15 +913,14 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun getActiveEventIdForTimestamp(timestamp: Long): Int? {
-        val now = timestamp
         val activeEvents = allEvents.value.filter {
-            now >= it.startDate && (it.endDate == null || now <= it.endDate + 86400000L - 1)
+            it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, timestamp)
         }.sortedWith(compareBy<com.app.data.Event> {
             if (it.endDate != null) 0 else 1
         }.thenBy {
             if (it.endDate != null) (it.endDate - it.startDate) else Long.MAX_VALUE
         }.thenBy {
-            it.endDate ?: Long.MAX_VALUE
+            it.endDate?.let { end -> FormatHelper.getEndOfDay(end) } ?: Long.MAX_VALUE
         }.thenByDescending {
             it.startDate
         })
@@ -1261,6 +1265,19 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             // Seed defaults
             repository.saveSetting("custom_categories", serializeCategories(Categories.list))
             _categoriesList.value = Categories.list
+        }
+    }
+
+    fun syncSystemCategories(categoriesToAdd: List<FinanceCategory>) {
+        viewModelScope.launch {
+            val currentList = _categoriesList.value.toMutableList()
+            val existingNames = currentList.map { it.name.trim().lowercase() }.toSet()
+            val toAdd = categoriesToAdd.filter { it.name.trim().lowercase() !in existingNames }
+            if (toAdd.isNotEmpty()) {
+                currentList.addAll(toAdd)
+                repository.saveSetting("custom_categories", serializeCategories(currentList))
+                _categoriesList.value = currentList
+            }
         }
     }
 
@@ -1653,61 +1670,73 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     private fun getNextMonth(month: String): String {
-        // month format: YYYY-MM
-        val parts = month.split("-")
-        var y = parts[0].toInt()
-        var m = parts[1].toInt()
-        m++
-        if (m > 12) {
-            m = 1
-            y++
+        return try {
+            val parts = month.split("-")
+            if (parts.size < 2) return month
+            var y = parts[0].toInt()
+            var m = parts[1].toInt()
+            m++
+            if (m > 12) {
+                m = 1
+                y++
+            }
+            String.format("%04d-%02d", y, m)
+        } catch (e: Exception) {
+            month
         }
-        return String.format("%04d-%02d", y, m)
     }
 
     // --- RECURRING TRANSACTIONS ENGINE ---
     private suspend fun processRecurringTransactions() {
-        // Find existing recurring transactions and check if duplicate is due
-        val txs = repository.allTransactions.firstOrNull() ?: return
-        val recurringSource = txs.filter { it.isRecurring && it.recurrencePeriod != "NONE" }
-        
-        val currentTime = System.currentTimeMillis()
-        
-        for (src in recurringSource) {
-            var lastOccurrenceTime = src.timestamp
-            // Find other occurrences in history of the same source
-            val related = txs.filter { it.note == src.note && it.amount == src.amount && it.walletId == src.walletId && it.categoryName == src.categoryName }
-            val latestInstance = related.maxByOrNull { it.timestamp }
-            if (latestInstance != null) {
-                lastOccurrenceTime = latestInstance.timestamp
-            }
+        try {
+            // Find existing recurring transactions and check if duplicate is due
+            val txs = repository.allTransactions.firstOrNull() ?: return
+            val recurringSource = txs.filter { it.isRecurring && it.recurrencePeriod != "NONE" }
+            
+            val currentTime = System.currentTimeMillis()
+            
+            for (src in recurringSource) {
+                var lastOccurrenceTime = src.timestamp
+                // Find other occurrences in history of the same source
+                val related = txs.filter { it.note == src.note && it.amount == src.amount && it.walletId == src.walletId && it.categoryName == src.categoryName }
+                val latestInstance = related.maxByOrNull { it.timestamp }
+                if (latestInstance != null) {
+                    lastOccurrenceTime = latestInstance.timestamp
+                }
 
-            val intervalMs = when (src.recurrencePeriod) {
-                "DAILY" -> 24L * 60L * 60L * 1000L
-                "WEEKLY" -> 7L * 24L * 60L * 60L * 1000L
-                "MONTHLY" -> 30L * 24L * 60L * 60L * 1000L // Simple approximation
-                else -> Long.MAX_VALUE
-            }
+                val intervalMs = when (src.recurrencePeriod) {
+                    "DAILY" -> 24L * 60L * 60L * 1000L
+                    "WEEKLY" -> 7L * 24L * 60L * 60L * 1000L
+                    "MONTHLY" -> 30L * 24L * 60L * 60L * 1000L // Simple approximation
+                    else -> Long.MAX_VALUE
+                }
 
-            var nextTime = lastOccurrenceTime + intervalMs
-            while (nextTime <= currentTime && intervalMs < Long.MAX_VALUE) {
-                // Insert a duplicate dated nextTime!
-                val newTx = Transaction(
-                    walletId = src.walletId,
-                    walletName = src.walletName,
-                    type = src.type,
-                    amount = src.amount,
-                    categoryName = src.categoryName,
-                    categoryIcon = src.categoryIcon,
-                    categoryColor = src.categoryColor,
-                    note = src.note,
-                    timestamp = nextTime,
-                    isRecurring = src.isRecurring,
-                    recurrencePeriod = src.recurrencePeriod
-                )
-                repository.insertTransaction(newTx)
-                nextTime += intervalMs
+                if (intervalMs <= 0 || intervalMs == Long.MAX_VALUE) continue
+
+                var nextTime = lastOccurrenceTime + intervalMs
+                var iterations = 0
+                while (nextTime <= currentTime && iterations < 12) {
+                    // Insert a duplicate dated nextTime!
+                    val newTx = Transaction(
+                        walletId = src.walletId,
+                        walletName = src.walletName,
+                        type = src.type,
+                        amount = src.amount,
+                        categoryName = src.categoryName,
+                        categoryIcon = src.categoryIcon,
+                        categoryColor = src.categoryColor,
+                        note = src.note,
+                        timestamp = nextTime,
+                        isRecurring = src.isRecurring,
+                        recurrencePeriod = src.recurrencePeriod
+                    )
+                    repository.insertTransaction(newTx)
+                    nextTime += intervalMs
+                    iterations++
+                }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -2162,7 +2191,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     // --- EVENTS SERVICES ---
-    fun addEvent(name: String, description: String, startDate: Long, endDate: Long?, limitAmount: Double?, colorHex: String = "#FF9800") {
+    fun addEvent(name: String, description: String, startDate: Long, endDate: Long?, limitAmount: Double?, colorHex: String = "#FF9800", isActive: Boolean = true) {
         viewModelScope.launch {
             repository.insertEvent(Event(
                 name = name,
@@ -2170,7 +2199,8 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 startDate = startDate,
                 endDate = endDate,
                 limitAmount = limitAmount,
-                colorHex = colorHex
+                colorHex = colorHex,
+                isActive = isActive
             ))
         }
     }
@@ -2184,6 +2214,15 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     fun deleteEvent(event: Event) {
         viewModelScope.launch {
             repository.deleteEvent(event)
+        }
+    }
+
+    fun reorderEvents(reorderedEvents: List<Event>) {
+        viewModelScope.launch {
+            reorderedEvents.forEachIndexed { index, event ->
+                repository.updateEvent(event.copy(displayOrder = index))
+            }
+            showSuccessNotification("Đã cập nhật thứ tự ưu tiên sự kiện!")
         }
     }
 
@@ -2757,7 +2796,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     _syncStatus.value = "ERROR"
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val folderName = "[APP_FINANCE]"
@@ -2949,7 +2988,9 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                             startDate = obj.optLong("startDate", System.currentTimeMillis()),
                             endDate = if (obj.has("endDate") && !obj.isNull("endDate")) obj.optLong("endDate") else null,
                             limitAmount = if (obj.has("limitAmount") && !obj.isNull("limitAmount")) obj.optDouble("limitAmount") else null,
-                            colorHex = obj.optString("colorHex", "#2196F3")
+                            colorHex = obj.optString("colorHex", "#2196F3"),
+                            isActive = obj.optBoolean("isActive", true),
+                            displayOrder = obj.optInt("displayOrder", 0)
                         )
                         repository.insertEventDirect(e)
                     }
@@ -3041,7 +3082,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     _syncStatus.value = "ERROR"
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val exportedData = repository.exportAllDataAsJson()
@@ -3171,7 +3212,7 @@ val folderName = "[APP_FINANCE]"
                     callback(false)
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val folderName = "[APP_FINANCE]"
@@ -3248,7 +3289,7 @@ val folderName = "[APP_FINANCE]"
                     return@launch
                 }
 
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
                 val folderName = "[APP_FINANCE]"
@@ -3258,7 +3299,7 @@ val folderName = "[APP_FINANCE]"
                 // 1. Check folder [APP_FINANCE]
                 var folderId: String? = null
                 val searchFolderRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder'&spaces=drive")
+                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
                     .header("Authorization", "Bearer ${token}")
                     .build()
                 val searchFolderResponse = client.newCall(searchFolderRequest).execute()
@@ -3273,35 +3314,47 @@ val folderName = "[APP_FINANCE]"
                     }
                 }
 
-                // CASE 3: Check ra không có thư mục -> Coi là new user, thông báo "Chào mừng bạn đến với Ứng dụng lịch sử chi tiêu"
-                if (folderId == null) {
-                    _syncStatus.value = "SUCCESS"
-                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        onResult(GoogleOnboardingResult.NoFolderNewUser())
-                    }
-                    return@launch
-                }
-
-                // Folder exists -> Check backup file
+                // 2. Search backup file inside folder with orderBy=modifiedTime desc (picks newest modified file)
                 var fileId: String? = null
-                val searchFileRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents&spaces=drive")
-                    .header("Authorization", "Bearer ${token}")
-                    .build()
-                
-                val searchResponse = client.newCall(searchFileRequest).execute()
-                if (searchResponse.isSuccessful) {
-                    val json = searchResponse.body?.string()
-                    if (json != null) {
-                        val jsonObj = org.json.JSONObject(json)
-                        val files = jsonObj.optJSONArray("files")
-                        if (files != null && files.length() > 0) {
-                            fileId = files.getJSONObject(0).getString("id")
+                if (folderId != null) {
+                    val searchFileRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    
+                    val searchResponse = client.newCall(searchFileRequest).execute()
+                    if (searchResponse.isSuccessful) {
+                        val json = searchResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                            }
                         }
                     }
                 }
 
-                // CASE 1: Thư mục có nhưng không có file tồn tại -> Báo không tìm được file, tạo dữ liệu mới, coi là new user
+                // 3. Fallback search across entire Drive space if fileId is still null
+                if (fileId == null) {
+                    val fallbackSearchRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    val fallbackResponse = client.newCall(fallbackSearchRequest).execute()
+                    if (fallbackResponse.isSuccessful) {
+                        val json = fallbackResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                            }
+                        }
+                    }
+                }
+
+                // CASE 1: Không tìm thấy file sao lưu -> Coi như New User
                 if (fileId == null) {
                     _syncStatus.value = "SUCCESS"
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -3352,6 +3405,9 @@ val folderName = "[APP_FINANCE]"
 
                     // CASE 2: File có và định dạng hợp lệ -> Xử lý khôi phục bình thường & báo chào mừng quay trở lại
                     performRestoreFromJsonString(jsonString, {})
+                    repository.saveSetting("cloud_sync_enabled", "true")
+                    repository.saveSetting("is_cloud_sync_enabled", "true")
+                    _isCloudSyncEnabled.value = true
                     try {
                         kotlinx.coroutines.withTimeout(3000) {
                             allWallets.first { it.isNotEmpty() }
@@ -3394,17 +3450,17 @@ val folderName = "[APP_FINANCE]"
                     _syncStatus.value = "ERROR"
                     return@launch
                 }
-                val scope = "oauth2:https://www.googleapis.com/auth/drive.file"
+                val scope = "oauth2:https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
                 val token = com.google.android.gms.auth.GoogleAuthUtil.getToken(context, account, scope)
                 
-val folderName = "[APP_FINANCE]"
+                val folderName = "[APP_FINANCE]"
                 val fileName = "finance_backup.json"
                 val client = okhttp3.OkHttpClient()
                 
                 addLog("Đang kiểm tra thư mục ${folderName}...")
                 var folderId: String? = null
                 val searchFolderRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder'&spaces=drive")
+                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
                     .header("Authorization", "Bearer ${token}")
                     .build()
                 val searchFolderResponse = client.newCall(searchFolderRequest).execute()
@@ -3419,34 +3475,51 @@ val folderName = "[APP_FINANCE]"
                     }
                 }
 
-                if (folderId == null) {
-                    addLog("Dữ liệu không tồn tại: Thư mục ${folderName} chưa được tạo trên Drive.")
-                    _syncStatus.value = "ERROR"
-                    return@launch
-                }
-                
-                addLog("Đang tìm file sao lưu bên trong thư mục...")
                 var fileId: String? = null
-                val searchFileRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents&spaces=drive")
-                    .header("Authorization", "Bearer ${token}")
-                    .build()
-                
-                val searchResponse = client.newCall(searchFileRequest).execute()
-                if (searchResponse.isSuccessful) {
-                    val json = searchResponse.body?.string()
-                    if (json != null) {
-                        val jsonObj = org.json.JSONObject(json)
-                        val files = jsonObj.optJSONArray("files")
-                        if (files != null && files.length() > 0) {
-                            fileId = files.getJSONObject(0).getString("id")
-                            addLog("Đã tìm thấy file sao lưu!")
+                if (folderId != null) {
+                    addLog("Đang tìm file sao lưu bên trong thư mục...")
+                    val searchFileRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    
+                    val searchResponse = client.newCall(searchFileRequest).execute()
+                    if (searchResponse.isSuccessful) {
+                        val json = searchResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                                addLog("Đã tìm thấy file sao lưu trong thư mục ${folderName}!")
+                            }
                         }
                     }
                 }
                 
                 if (fileId == null) {
-                    addLog("Dữ liệu không tồn tại: Không có bản sao lưu nào trong thư mục ${folderName}.")
+                    addLog("Đang tìm kiếm file sao lưu finance_backup.json trên không gian Drive...")
+                    val searchFileRequest = okhttp3.Request.Builder()
+                        .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and trashed=false&spaces=drive&orderBy=modifiedTime desc")
+                        .header("Authorization", "Bearer ${token}")
+                        .build()
+                    
+                    val searchResponse = client.newCall(searchFileRequest).execute()
+                    if (searchResponse.isSuccessful) {
+                        val json = searchResponse.body?.string()
+                        if (json != null) {
+                            val jsonObj = org.json.JSONObject(json)
+                            val files = jsonObj.optJSONArray("files")
+                            if (files != null && files.length() > 0) {
+                                fileId = files.getJSONObject(0).getString("id")
+                                addLog("Đã tìm thấy file sao lưu mới nhất trên Google Drive!")
+                            }
+                        }
+                    }
+                }
+
+                if (fileId == null) {
+                    addLog("Dữ liệu không tồn tại: Không tìm thấy tệp sao lưu ${fileName} trên Google Drive.")
                     _syncStatus.value = "ERROR"
                     return@launch
                 }

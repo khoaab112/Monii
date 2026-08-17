@@ -190,19 +190,24 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         val isCloudSyncEnabled by viewModel.isCloudSyncEnabled.collectAsState()
+        var googleAccount by remember(isCloudSyncEnabled) {
+            mutableStateOf(com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context))
+        }
+
         val signInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
             contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
         ) { result ->
             if (result.resultCode == android.app.Activity.RESULT_OK) {
                 try {
                     val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
-                    task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                    val signedAccount = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                    googleAccount = signedAccount ?: com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
+                    viewModel.toggleCloudSync(true)
                     
                     viewModel.checkDriveBackupConflict(context) { hasConflict ->
                         if (hasConflict) {
                             showCloudRestoreDialog = true
                         } else {
-                            viewModel.toggleCloudSync(true)
                             com.app.service.CloudSyncWorker.setupPeriodicSync(context)
                             viewModel.showSuccessNotification("Đã kết nối Google Drive và bật đồng bộ!")
                         }
@@ -221,12 +226,7 @@ fun SettingsScreen(
                     // ignore
                 }
                 viewModel.showWarningNotification(errorMsg)
-                viewModel.toggleCloudSync(false)
             }
-        }
-
-        val googleAccount = remember(isCloudSyncEnabled) {
-            com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
         }
 
         val gifImageLoader = remember(context) {
@@ -266,7 +266,8 @@ fun SettingsScreen(
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         ) {
             Box(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                if (!isCloudSyncEnabled || googleAccount == null) {
+                val currentAccount = googleAccount
+                if (currentAccount == null) {
                     // TRẠNG THÁI 1: CHƯA ĐĂNG NHẬP GOOGLE
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -292,7 +293,10 @@ fun SettingsScreen(
                             onClick = {
                                 val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN)
                                     .requestEmail()
-                                    .requestScopes(com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"))
+                                    .requestScopes(
+                                        com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"),
+                                        com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.readonly")
+                                    )
                                     .build()
                                 val client = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
                                 signInLauncher.launch(client.signInIntent)
@@ -336,7 +340,7 @@ fun SettingsScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            val photoUrl = googleAccount.photoUrl
+                            val photoUrl = currentAccount.photoUrl
                             if (photoUrl != null) {
                                 coil.compose.AsyncImage(
                                     model = photoUrl,
@@ -355,7 +359,7 @@ fun SettingsScreen(
                                         .clip(CircleShape)
                                         .background(MaterialTheme.colorScheme.primaryContainer)
                                 ) {
-                                    val initial = googleAccount.displayName?.firstOrNull()?.toString()?.uppercase() ?: "G"
+                                    val initial = currentAccount.displayName?.firstOrNull()?.toString()?.uppercase() ?: "G"
                                     Text(
                                         text = initial,
                                         fontWeight = FontWeight.Bold,
@@ -367,14 +371,14 @@ fun SettingsScreen(
 
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = googleAccount.displayName ?: "Người dùng Google",
+                                    text = currentAccount.displayName ?: "Người dùng Google",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 16.sp,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = googleAccount.email ?: "",
+                                    text = currentAccount.email ?: "",
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -391,7 +395,10 @@ fun SettingsScreen(
                                     androidx.work.WorkManager.getInstance(context).cancelUniqueWork("CloudSyncService")
                                     viewModel.toggleCloudSync(false)
                                     val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                                    com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso).signOut()
+                                    com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso).signOut().addOnCompleteListener {
+                                        googleAccount = null
+                                    }
+                                    googleAccount = null
                                     viewModel.clearAllData(context)
                                     viewModel.setHasSeenOnboarding(false)
                                     viewModel.showSuccessNotification("Đã đăng xuất tài khoản Google")
@@ -490,7 +497,10 @@ fun SettingsScreen(
                         .testTag("manage_wallets_item")
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
 
                 // 2. Quản lý các hạng mục
                 ListItem(
@@ -514,7 +524,10 @@ fun SettingsScreen(
                         .testTag("manage_categories_item")
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
 
                 // 3. Hạn mức
                 ListItem(
@@ -538,7 +551,10 @@ fun SettingsScreen(
                         .testTag("manage_budget_goal_item")
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
 
                 // 4. Sự kiện
                 ListItem(
@@ -562,7 +578,10 @@ fun SettingsScreen(
                         .testTag("manage_events_item")
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
 
                 // 5. Tiết kiệm
                 ListItem(
@@ -586,7 +605,10 @@ fun SettingsScreen(
                         .testTag("manage_savings_item")
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
 
                 // 6. Sổ nợ
                 ListItem(
@@ -610,7 +632,10 @@ fun SettingsScreen(
                         .testTag("manage_debt_book_item")
                 )
 
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
 
                 // 7. Thống kê & báo cáo
                 ListItem(
@@ -1178,6 +1203,24 @@ fun SettingsScreen(
         val googleAccount = remember {
             com.google.android.gms.auth.api.signin.GoogleSignIn.getLastSignedInAccount(context)
         }
+        val dialogGifLoader = remember(context) {
+            ImageLoader.Builder(context)
+                .components {
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        add(ImageDecoderDecoder.Factory())
+                    } else {
+                        add(GifDecoder.Factory())
+                    }
+                }
+                .build()
+        }
+        val fileIconGifPainter = rememberAsyncImagePainter(
+            model = ImageRequest.Builder(context)
+                .data(com.app.R.drawable.file_icon)
+                .build(),
+            imageLoader = dialogGifLoader
+        )
+
         ModalBottomSheet(
             onDismissRequest = {
                 showCloudRestoreDialog = false
@@ -1189,71 +1232,89 @@ fun SettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(24.dp),
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // Header: User Profile Account Row
                 if (googleAccount != null) {
-                    val photoUrl = googleAccount.photoUrl
-                    if (photoUrl != null) {
-                        coil.compose.AsyncImage(
-                            model = photoUrl,
-                            contentDescription = "Avatar",
-                            modifier = Modifier
-                                .size(64.dp)
-                                .clip(CircleShape)
-                                .border(2.dp, MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                        )
-                    } else {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(64.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                val initial = googleAccount.displayName?.firstOrNull()?.toString()?.uppercase() ?: "G"
-                                Text(
-                                    text = initial,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    fontSize = 24.sp
-                                )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                shape = RoundedCornerShape(16.dp)
+                            )
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        val photoUrl = googleAccount.photoUrl
+                        if (photoUrl != null) {
+                            coil.compose.AsyncImage(
+                                model = photoUrl,
+                                contentDescription = "Avatar",
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .clip(CircleShape)
+                                    .border(1.5.dp, MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                            )
+                        } else {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    val initial = googleAccount.displayName?.firstOrNull()?.toString()?.uppercase() ?: "G"
+                                    Text(
+                                        text = initial,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        fontSize = 18.sp
+                                    )
+                                }
                             }
                         }
-                    }
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        text = googleAccount.displayName ?: "Người dùng Google",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Text(
-                        text = googleAccount.email ?: "",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                } else {
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.size(56.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.CloudSync,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(32.dp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = googleAccount.displayName ?: "Người dùng Google",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = googleAccount.email ?: "",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
+
+                // 1st Red Box Position: Animated Illustration GIF
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = fileIconGifPainter,
+                        contentDescription = "File Icon GIF Animation",
+                        modifier = Modifier
+                            .height(100.dp)
+                            .fillMaxWidth(0.6f),
+                        contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
                 Text(
                     text = "Phát hiện bản sao lưu trên Drive!",
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.Black,
                     fontSize = 20.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                     textAlign = TextAlign.Center
@@ -1261,38 +1322,92 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = "Tài khoản Google của bạn có chứa dữ liệu đã được sao lưu trước đó. Bạn muốn xử lý thế nào với dữ liệu hiện tại trên thiết bị?",
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
                 )
                 Spacer(modifier = Modifier.height(24.dp))
 
-                // Option 1: Merge Data (Recommended)
-                Button(
-                    onClick = {
-                        showCloudRestoreDialog = false
-                        viewModel.mergeFromDrive(context)
-                        viewModel.toggleCloudSync(true)
-                        com.app.service.CloudSyncWorker.setupPeriodicSync(context)
-                    },
+                // 3 Action Buttons (Arranged from left to right: Ghi đè, Hợp nhất, then Khôi phục full-width below)
+                // Row 1: Ghi đè (Left) & Hợp nhất (Right)
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.padding(vertical = 4.dp)
+                    // Button 1 (Left): Ghi đè đám mây
+                    OutlinedButton(
+                        onClick = {
+                            showCloudRestoreDialog = false
+                            viewModel.toggleCloudSync(true)
+                            com.app.service.CloudSyncWorker.setupPeriodicSync(context)
+                            viewModel.showSuccessNotification("Đã bật đồng bộ (Ghi đè dữ liệu đám mây)")
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f))
                     ) {
-                        Icon(Icons.Default.MergeType, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Hợp nhất dữ liệu (Khuyên dùng)", fontWeight = FontWeight.Bold)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Image(
+                                painter = painterResource(id = com.app.R.drawable.ic_press),
+                                contentDescription = "Ghi đè",
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Ghi đè",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+
+                    // Button 2 (Right): Hợp nhất dữ liệu (White background + Primary blue border)
+                    OutlinedButton(
+                        onClick = {
+                            showCloudRestoreDialog = false
+                            viewModel.mergeFromDrive(context)
+                            viewModel.toggleCloudSync(true)
+                            com.app.service.CloudSyncWorker.setupPeriodicSync(context)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.primary
+                        ),
+                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Image(
+                                painter = painterResource(id = com.app.R.drawable.ic_merge),
+                                contentDescription = "Hợp nhất",
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Hợp nhất",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
                     }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Option 2: Restore & Overwrite local
+                // Row 2: Full-Width Button 3: Khôi phục (Ghi đè máy)
                 OutlinedButton(
                     onClick = {
                         showCloudRestoreDialog = false
@@ -1300,37 +1415,30 @@ fun SettingsScreen(
                         viewModel.toggleCloudSync(true)
                         com.app.service.CloudSyncWorker.setupPeriodicSync(context)
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.Center,
                         modifier = Modifier.padding(vertical = 4.dp)
                     ) {
-                        Icon(Icons.Default.CloudDownload, contentDescription = null)
+                        Image(
+                            painter = painterResource(id = com.app.R.drawable.ic_backup),
+                            contentDescription = "Khôi phục",
+                            modifier = Modifier.size(20.dp)
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Khôi phục (Ghi đè máy)", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "Khôi phục (Ghi đè máy)",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                     }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Option 3: Overwrite Cloud
-                TextButton(
-                    onClick = {
-                        showCloudRestoreDialog = false
-                        viewModel.toggleCloudSync(true)
-                        com.app.service.CloudSyncWorker.setupPeriodicSync(context)
-                        viewModel.showSuccessNotification("Đã bật đồng bộ (Ghi đè dữ liệu đám mây)")
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "Ghi đè đám mây bằng dữ liệu máy",
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 13.sp
-                    )
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))

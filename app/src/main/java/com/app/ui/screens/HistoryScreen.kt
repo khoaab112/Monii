@@ -39,6 +39,7 @@ import com.app.data.Categories
 import com.app.data.Transaction
 import com.app.data.Wallet
 import com.app.data.FinanceCategory
+import com.app.data.Event
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.animation.slideInVertically
@@ -76,6 +77,7 @@ fun HistoryScreen(
     val selectedCategoryFilter by viewModel.selectedCategoryFilter.collectAsState()
     val categoriesList by viewModel.categoriesList.collectAsState()
     val walletsList by viewModel.allWallets.collectAsState()
+    val allEvents by viewModel.allEvents.collectAsState()
     var editingTransaction by remember { mutableStateOf<Transaction?>(null) }
     var transactionToDelete by remember { mutableStateOf<Transaction?>(null) }
 
@@ -1202,6 +1204,7 @@ fun HistoryScreen(
             tx = editingTransaction!!,
             categoriesList = categoriesList,
             walletsList = walletsList,
+            eventsList = allEvents,
             onDismiss = { editingTransaction = null },
             onSave = { updatedTx ->
                 viewModel.updateTransaction(updatedTx)
@@ -1384,6 +1387,7 @@ fun EditTransactionDialog(
     tx: Transaction,
     categoriesList: List<FinanceCategory>,
     walletsList: List<Wallet>,
+    eventsList: List<Event> = emptyList(),
     onDismiss: () -> Unit,
     onSave: (Transaction) -> Unit
 ) {
@@ -1406,6 +1410,7 @@ fun EditTransactionDialog(
     var selectedType by remember { mutableStateOf(tx.type) } // EXPENSE, INCOME
     var selectedCategoryName by remember { mutableStateOf(if (tx.type == "TRANSFER") "Nội bộ" else tx.categoryName) }
     var selectedWalletId by remember { mutableStateOf<Int?>(tx.walletId) }
+    var selectedEventId by remember { mutableStateOf<Int?>(tx.eventId) }
     var noteText by remember { mutableStateOf(tx.note) }
     var isRecurring by remember { mutableStateOf(tx.isRecurring) }
     var recurrencePeriod by remember { mutableStateOf(tx.recurrencePeriod.ifEmpty { "DAILY" }) }
@@ -1414,6 +1419,7 @@ fun EditTransactionDialog(
     // Dropdowns visibility
     var categoryDropdownExpanded by remember { mutableStateOf(false) }
     var walletDropdownExpanded by remember { mutableStateOf(false) }
+    var eventDropdownExpanded by remember { mutableStateOf(false) }
     
     // Filter categories depending on selectedType. Only leaf categories (no children) are shown.
     val filteredCategories = remember(categoriesList, selectedType) {
@@ -1808,6 +1814,127 @@ fun EditTransactionDialog(
                                     }
                                 }
                             }
+
+                            // 7. Event Selector (Chỉ hiển thị input khi bản ghi có eventId, ngược lại ẩn input và làm mờ xám label)
+                            if (tx.eventId != null) {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = "Sự kiện liên kết",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Box(modifier = Modifier.fillMaxWidth()) {
+                                        val currentEvent = eventsList.find { it.id == selectedEventId }
+                                        val eventColor = currentEvent?.let {
+                                            try { Color(android.graphics.Color.parseColor(it.colorHex)) } catch (e: Exception) { MaterialTheme.colorScheme.primary }
+                                        } ?: MaterialTheme.colorScheme.outline
+
+                                        OutlinedTextField(
+                                            value = currentEvent?.name ?: "Không thuộc sự kiện nào",
+                                            onValueChange = {},
+                                            readOnly = true,
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = if (selectedEventId != null) Icons.Default.Event else Icons.Default.EventBusy,
+                                                    contentDescription = "Event",
+                                                    tint = eventColor,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            },
+                                            trailingIcon = {
+                                                Icon(imageVector = Icons.Default.ArrowDropDown, contentDescription = "Dropdown")
+                                            },
+                                            shape = RoundedCornerShape(14.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .testTag("edit_tx_event_selector")
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .matchParentSize()
+                                                .background(Color.Transparent)
+                                                .clickable { eventDropdownExpanded = !eventDropdownExpanded }
+                                        )
+
+                                        DropdownMenu(
+                                            expanded = eventDropdownExpanded,
+                                            onDismissRequest = { eventDropdownExpanded = false },
+                                            modifier = Modifier.fillMaxWidth(0.9f)
+                                        ) {
+                                            // Option to unlink/remove from event
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Close,
+                                                            contentDescription = "Không thuộc sự kiện nào",
+                                                            tint = MaterialTheme.colorScheme.error,
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                        Text("Không thuộc sự kiện nào (Gỡ sự kiện)", fontSize = 14.sp, color = MaterialTheme.colorScheme.error)
+                                                    }
+                                                },
+                                                onClick = {
+                                                    selectedEventId = null
+                                                    eventDropdownExpanded = false
+                                                }
+                                            )
+                                            val selectableEvents = remember(eventsList, selectedTimestamp, selectedEventId) {
+                                                eventsList.filter { ev ->
+                                                    (ev.isActive && FormatHelper.isEventOngoing(ev.startDate, ev.endDate, selectedTimestamp)) || ev.id == selectedEventId
+                                                }.sortedByDescending { it.startDate }
+                                            }
+                                            selectableEvents.forEach { ev ->
+                                                val evColor = try { Color(android.graphics.Color.parseColor(ev.colorHex)) } catch (e: Exception) { MaterialTheme.colorScheme.primary }
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Row(
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                        ) {
+                                                            Box(
+                                                                modifier = Modifier
+                                                                    .size(12.dp)
+                                                                    .clip(CircleShape)
+                                                                    .background(evColor)
+                                                            )
+                                                            Text(ev.name, fontSize = 14.sp, fontWeight = if (ev.id == selectedEventId) FontWeight.Bold else FontWeight.Normal)
+                                                        }
+                                                    },
+                                                    onClick = {
+                                                        selectedEventId = ev.id
+                                                        eventDropdownExpanded = false
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp, vertical = 2.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Sự kiện liên kết",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
+                                    )
+                                    Text(
+                                        text = "Không có",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.outline.copy(alpha = 0.65f)
+                                    )
+                                }
+                            }
                         }
 
                         Spacer(modifier = Modifier.height(12.dp))
@@ -1842,7 +1969,8 @@ fun EditTransactionDialog(
                                             note = noteText.ifEmpty { "Chuyển tiền nội bộ" },
                                             timestamp = selectedTimestamp,
                                             isRecurring = isRecurring,
-                                            recurrencePeriod = if (isRecurring) recurrencePeriod else "NONE"
+                                            recurrencePeriod = if (isRecurring) recurrencePeriod else "NONE",
+                                            eventId = selectedEventId
                                         )
                                     } else {
                                         val targetCat = categoriesList.find { it.name == selectedCategoryName } ?: categoriesList.first()
@@ -1857,7 +1985,8 @@ fun EditTransactionDialog(
                                             note = noteText.ifEmpty { targetCat.name },
                                             timestamp = selectedTimestamp,
                                             isRecurring = isRecurring,
-                                            recurrencePeriod = if (isRecurring) recurrencePeriod else "NONE"
+                                            recurrencePeriod = if (isRecurring) recurrencePeriod else "NONE",
+                                            eventId = selectedEventId
                                         )
                                     }
                                     onSave(updatedTx)

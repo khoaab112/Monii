@@ -49,7 +49,9 @@ data class Event(
     val startDate: Long,
     val endDate: Long? = null,
     val limitAmount: Double? = null,
-    val colorHex: String = "#FF9800"
+    val colorHex: String = "#FF9800",
+    val isActive: Boolean = true,
+    val displayOrder: Int = 0
 )
 
 @Entity(tableName = "budgets")

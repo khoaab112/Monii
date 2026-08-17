@@ -7,6 +7,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import kotlinx.coroutines.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -155,6 +156,10 @@ fun MainContent(
     var showScanResultPopup by remember { mutableStateOf(false) }
     var scannedLogsList by remember { mutableStateOf<List<com.app.ui.NotificationLog>>(emptyList()) }
     var showPermissionErrorPopup by remember { mutableStateOf(false) }
+    var isScanningNotifications by remember { mutableStateOf(false) }
+    var showScanningBadge by remember { mutableStateOf(false) }
+
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(isAppUnlocked, notificationReaderEnabled) {
         if (isAppUnlocked && notificationReaderEnabled) {
@@ -162,25 +167,37 @@ fun MainContent(
             if (!isPermitted) {
                 showPermissionErrorPopup = true
             } else {
-                // If it's permitted but the service is dead (e.g., killed by Xiaomi HyperOS),
-                // request a rebind.
-                if (com.app.service.BankNotificationListenerService.instance == null) {
-                    com.app.service.BankNotificationListenerService.requestRebindService(context)
-                    // Wait a bit for it to bind before trying to scan
-                    kotlinx.coroutines.delay(1000)
-                }
-
+                isScanningNotifications = true
+                showScanningBadge = true
+                val startTime = System.currentTimeMillis()
                 viewModel.scanNotificationsManual(
                     context = context,
                     onSuccess = { count ->
-                        if (count > 0) {
-                            val activePending = viewModel.notificationLogs.value.filter { it.status == "PENDING" }.take(count)
-                            scannedLogsList = activePending
-                            showScanResultPopup = true
+                        coroutineScope.launch {
+                            val elapsed = System.currentTimeMillis() - startTime
+                            val remaining = 2500L - elapsed
+                            if (remaining > 0) {
+                                kotlinx.coroutines.delay(remaining)
+                            }
+                            isScanningNotifications = false
+                            showScanningBadge = false
+                            if (count > 0) {
+                                val activePending = viewModel.notificationLogs.value.filter { it.status == "PENDING" }.take(count)
+                                scannedLogsList = activePending
+                                showScanResultPopup = true
+                            }
                         }
                     },
                     onError = { err ->
-                        // Silent or ignored
+                        coroutineScope.launch {
+                            val elapsed = System.currentTimeMillis() - startTime
+                            val remaining = 2000L - elapsed
+                            if (remaining > 0) {
+                                kotlinx.coroutines.delay(remaining)
+                            }
+                            isScanningNotifications = false
+                            showScanningBadge = false
+                        }
                     }
                 )
             }
@@ -771,6 +788,94 @@ fun MainContent(
                                 }
                             }
                         )
+                    }
+
+                    // Floating Mini Scanning Badge - Nằm ở góc TRÊN bên phải (dưới header) như ảnh 2
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(end = 16.dp, top = 8.dp),
+                        contentAlignment = Alignment.TopEnd
+                    ) {
+                        AnimatedVisibility(
+                            visible = isScanningNotifications && showScanningBadge,
+                            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+                        ) {
+                            Card(
+                                modifier = Modifier
+                                    .widthIn(min = 200.dp, max = 280.dp)
+                                    .testTag("floating_scanning_badge"),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                ),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
+                                ),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                        .fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    val context = LocalContext.current
+                                    val imageLoader = remember(context) {
+                                        ImageLoader.Builder(context)
+                                            .components {
+                                                if (Build.VERSION.SDK_INT >= 28) {
+                                                    add(ImageDecoderDecoder.Factory())
+                                                } else {
+                                                    add(GifDecoder.Factory())
+                                                }
+                                            }
+                                            .build()
+                                    }
+                                    val painter = rememberAsyncImagePainter(
+                                        model = ImageRequest.Builder(context)
+                                            .data(R.drawable.searching)
+                                            .build(),
+                                        imageLoader = imageLoader
+                                    )
+                                    Image(
+                                        painter = painter,
+                                        contentDescription = "Đang quét",
+                                        modifier = Modifier.size(32.dp)
+                                    )
+
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Đang quét thông báo",
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = "Kiểm tra biến động số dư...",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { showScanningBadge = false },
+                                        modifier = Modifier.size(20.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Đóng",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

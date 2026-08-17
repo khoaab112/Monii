@@ -1226,15 +1226,7 @@ fun CategoryManagementScreen(
                         onClick = {
                             val toAdd = missingCategories.filter { it.name in selectedCategoryNames }
                             if (toAdd.isNotEmpty()) {
-                                toAdd.forEach { cat ->
-                                    viewModel.addCategory(
-                                        name = cat.name,
-                                        iconName = cat.iconName,
-                                        colorHex = cat.colorHex,
-                                        type = cat.type,
-                                        parentName = cat.parentName
-                                    )
-                                }
+                                viewModel.syncSystemCategories(toAdd)
                                 viewModel.showSuccessNotification("Đã bổ sung ${toAdd.size} danh mục mới thành công!")
                             }
                             showSyncSystemCategoriesSheet = false
@@ -1246,7 +1238,7 @@ fun CategoryManagementScreen(
                             .testTag("confirm_import_system_categories_btn"),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFFFF3B30),
+                            containerColor = MaterialTheme.colorScheme.primary,
                             contentColor = Color.White
                         )
                     ) {
@@ -1257,7 +1249,7 @@ fun CategoryManagementScreen(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Thêm ${selectedCategoryNames.size} danh mục đã chọn",
+                            text = "Bổ sung ${selectedCategoryNames.size} danh mục đã chọn",
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold
                         )

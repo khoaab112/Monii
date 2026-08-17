@@ -14,8 +14,8 @@ android {
     applicationId = "com.aistudio.ghichepthuchi.pfmkt"
     minSdk = 24
     targetSdk = 36
-    versionCode = 6
-    versionName = "4.0.0"
+    versionCode = 8
+    versionName = "4.0.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

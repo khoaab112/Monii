@@ -319,7 +319,10 @@ fun OnboardingScreen(
                                 com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN
                             )
                                 .requestEmail()
-                                .requestScopes(com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"))
+                                .requestScopes(
+                                    com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"),
+                                    com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.readonly")
+                                )
                                 .build()
                             val client = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
                             signInLauncher.launch(client.signInIntent)
