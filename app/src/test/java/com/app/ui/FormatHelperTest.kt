@@ -116,4 +116,47 @@ class FormatHelperTest {
         assertEquals(0, resultCal.get(java.util.Calendar.MINUTE))
         assertEquals(0, resultCal.get(java.util.Calendar.SECOND))
     }
+
+    @Test
+    fun eventStatusStyle_prioritizesEndedOverInactive() {
+        val cal = java.util.Calendar.getInstance()
+        cal.set(2026, java.util.Calendar.AUGUST, 1, 0, 0, 0)
+        val startDate = cal.timeInMillis
+        cal.set(2026, java.util.Calendar.AUGUST, 10, 23, 59, 59)
+        val endDate = cal.timeInMillis
+
+        cal.set(2026, java.util.Calendar.AUGUST, 17, 12, 0, 0)
+        val now = cal.timeInMillis
+
+        val inactiveEndedEvent = com.app.data.Event(
+            id = 1,
+            name = "Thất nghiệp",
+            description = "Nghỉ việc",
+            startDate = startDate,
+            endDate = endDate,
+            isActive = false
+        )
+
+        val statusStyle = com.app.ui.components.getEventStatusStyle(inactiveEndedEvent, 0.0, now)
+        assertEquals("Đã kết thúc", statusStyle.text)
+
+        val priority = com.app.ui.components.getEventPriority(inactiveEndedEvent, 0.0, now)
+        assertEquals(5, priority)
+
+        val activeEndedEvent = inactiveEndedEvent.copy(isActive = true)
+        val activeStatusStyle = com.app.ui.components.getEventStatusStyle(activeEndedEvent, 0.0, now)
+        assertEquals("Đã kết thúc", activeStatusStyle.text)
+
+        // Ongoing event that is inactive should be "Dừng"
+        val ongoingInactiveEvent = com.app.data.Event(
+            id = 2,
+            name = "Hà Giang",
+            description = "Đi phượt",
+            startDate = startDate,
+            endDate = null, // Ongoing
+            isActive = false
+        )
+        val pausedStatusStyle = com.app.ui.components.getEventStatusStyle(ongoingInactiveEvent, 0.0, now)
+        assertEquals("Dừng", pausedStatusStyle.text)
+    }
 }

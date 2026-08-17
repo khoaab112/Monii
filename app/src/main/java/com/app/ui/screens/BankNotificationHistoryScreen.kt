@@ -126,7 +126,7 @@ fun BankNotificationHistoryScreen(
     val activeEvents = remember(events) {
         val nowCurrent = System.currentTimeMillis()
         events.filter { ev ->
-            FormatHelper.isEventOngoing(ev.startDate, ev.endDate, nowCurrent)
+            ev.isActive && FormatHelper.isEventOngoing(ev.startDate, ev.endDate, nowCurrent)
         }.sortedWith(compareBy<com.app.data.Event> {
             if (it.endDate != null) 0 else 1
         }.thenBy {
@@ -1094,9 +1094,9 @@ fun PendingLogItem(
     
     var selectedEventId by remember(log, activeEvents) {
         val autoMatch = activeEvents.firstOrNull { ev ->
-            FormatHelper.isEventOngoing(ev.startDate, ev.endDate, log.timestamp)
+            ev.isActive && FormatHelper.isEventOngoing(ev.startDate, ev.endDate, log.timestamp)
         }
-        mutableStateOf(autoMatch?.id ?: activeEvents.firstOrNull()?.id)
+        mutableStateOf(autoMatch?.id)
     }
 
     var showEventPicker by remember(log) { mutableStateOf(false) }
@@ -1562,8 +1562,13 @@ fun PendingLogItem(
                                 }
                             }
 
-                            // EVENT DROPDOWN BOX
-                            if (events.isNotEmpty()) {
+                            // EVENT DROPDOWN BOX (Chỉ hiển thị khi có sự kiện thỏa mãn thời điểm hiện tại của thông báo)
+                            val selectableEventsForLog = remember(events, log.timestamp, selectedEventId) {
+                                events.filter { ev ->
+                                    (ev.isActive && FormatHelper.isEventOngoing(ev.startDate, ev.endDate, log.timestamp)) || ev.id == selectedEventId
+                                }.sortedByDescending { it.startDate }
+                            }
+                            if (selectableEventsForLog.isNotEmpty()) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically
@@ -1594,7 +1599,7 @@ fun PendingLogItem(
 
                                     Box(modifier = Modifier.weight(0.65f)) {
                                         Box(modifier = Modifier.fillMaxWidth()) {
-                                            val selectedEvent = events.find { it.id == selectedEventId }
+                                            val selectedEvent = selectableEventsForLog.find { it.id == selectedEventId }
                                             val eventColor = if (selectedEvent != null) {
                                                 try { FormatHelper.parseColor(selectedEvent.colorHex) } catch (e: Exception) { Color(0xFFE65100) }
                                             } else {
@@ -1714,14 +1719,14 @@ fun PendingLogItem(
                                                                 color = MaterialTheme.colorScheme.onSurface
                                                             )
                                                         }
-
-                                                        // Option: All Events (Including newly created ones)
-                                                        events.sortedByDescending { it.startDate }.forEach { ev ->
-                                                    val evColor = try {
-                                                        Color(android.graphics.Color.parseColor(ev.colorHex))
-                                                    } catch (e: Exception) {
-                                                        MaterialTheme.colorScheme.secondary
-                                                    }
+                                                        
+                                                        // Option: Selectable Events (Active and ongoing for this log's timestamp)
+                                                        selectableEventsForLog.forEach { ev ->
+                                                            val evColor = try {
+                                                                Color(android.graphics.Color.parseColor(ev.colorHex))
+                                                            } catch (e: Exception) {
+                                                                MaterialTheme.colorScheme.secondary
+                                                            }
                                                         Row(
                                                             modifier = Modifier
                                                                 .fillMaxWidth()

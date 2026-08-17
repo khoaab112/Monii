@@ -421,4 +421,36 @@ class FinanceRepositoryTest {
         repository.deleteDebt(debt)
         assertEquals(initialWalletBalance, repository.getWalletById(walletId)!!.balance, 0.0)
     }
+
+    @Test
+    fun `updating transaction eventId and amount updates repository correctly`() = runTest {
+        val walletId = repository.insertWallet(Wallet(name = "Wallet", type = "CASH", balance = 1000000.0, colorHex = "#FFF", iconName = "Payments")).toInt()
+        val eventId = repository.insertEvent(Event(name = "Trip", description = "Test trip", startDate = System.currentTimeMillis(), limitAmount = 500000.0, colorHex = "#FF0000")).toInt()
+
+        val txId = repository.insertTransaction(
+            Transaction(
+                walletId = walletId,
+                walletName = "Wallet",
+                type = "EXPENSE",
+                amount = 100000.0,
+                categoryName = "Food",
+                categoryIcon = "Restaurant",
+                categoryColor = "#FFF",
+                note = "Lunch",
+                timestamp = System.currentTimeMillis(),
+                eventId = eventId
+            )
+        ).toInt()
+
+        assertEquals(900000.0, repository.getWalletById(walletId)!!.balance, 0.0)
+
+        // Update transaction: change amount to 150000 and unlink event (eventId = null)
+        val originalTx = repository.getTransactionById(txId)!!
+        repository.updateTransaction(originalTx.copy(amount = 150000.0, eventId = null))
+
+        val updatedTx = repository.getTransactionById(txId)!!
+        assertEquals(150000.0, updatedTx.amount, 0.0)
+        org.junit.Assert.assertNull(updatedTx.eventId)
+        assertEquals(850000.0, repository.getWalletById(walletId)!!.balance, 0.0)
+    }
 }

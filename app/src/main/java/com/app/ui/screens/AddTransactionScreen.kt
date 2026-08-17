@@ -88,22 +88,30 @@ fun AddTransactionScreen(
     var isEventTransaction by remember { mutableStateOf(false) }
     var selectedEventId by remember { mutableStateOf<Int?>(null) }
 
-    LaunchedEffect(events) {
-        val now = System.currentTimeMillis()
+    // Date Picker Setup
+    val calendar = remember { Calendar.getInstance() }
+    var selectedTimestamp by remember { mutableStateOf(calendar.timeInMillis) }
+    var dateLabel by remember { mutableStateOf("Hôm nay") }
+
+    LaunchedEffect(events, selectedTimestamp) {
         val activeEvents = events.filter {
-            it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, now)
+            it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, selectedTimestamp)
         }
         if (activeEvents.isNotEmpty() && selectedEventId == null && !isEventTransaction) {
             val nearestStart = activeEvents.maxByOrNull { it.startDate }
             selectedEventId = nearestStart?.id
             isEventTransaction = true
+        } else if (selectedEventId != null) {
+            val isStillValid = activeEvents.any { it.id == selectedEventId }
+            if (!isStillValid) {
+                val nearestStart = activeEvents.maxByOrNull { it.startDate }
+                selectedEventId = nearestStart?.id
+                if (selectedEventId == null) {
+                    isEventTransaction = false
+                }
+            }
         }
     }
-
-    // Date Picker Setup
-    val calendar = remember { Calendar.getInstance() }
-    var selectedTimestamp by remember { mutableStateOf(calendar.timeInMillis) }
-    var dateLabel by remember { mutableStateOf("Hôm nay") }
 
     // Smart Select State Management
     var hasManuallySelected by remember { mutableStateOf(false) }
@@ -541,13 +549,10 @@ fun AddTransactionScreen(
                 }
             }
             
-            // Thêm tính năng chọn Event (Ưu tiên các sự kiện active)
-            val activeEventsForSelection = events.filter { it.isActive }
-                .sortedWith(
-                    compareByDescending<com.app.data.Event> { ev ->
-                        FormatHelper.isEventOngoing(ev.startDate, ev.endDate)
-                    }.thenByDescending { ev -> ev.startDate }
-                )
+            // Thêm tính năng chọn Event (Chỉ hiển thị các sự kiện đang active và đang diễn ra tại mốc thời gian giao dịch)
+            val activeEventsForSelection = events.filter { 
+                it.isActive && FormatHelper.isEventOngoing(it.startDate, it.endDate, selectedTimestamp)
+            }.sortedByDescending { it.startDate }
 
             val isOptionExpanded = isEventTransaction || isTransfer
             if (isOptionExpanded) {

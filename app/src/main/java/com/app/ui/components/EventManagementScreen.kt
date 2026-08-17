@@ -48,8 +48,12 @@ import coil.compose.rememberAsyncImagePainter
 import coil.decode.SvgDecoder
 import coil.request.ImageRequest
 import com.app.data.Event
+import com.app.data.Transaction
 import com.app.ui.FinanceViewModel
 import com.app.ui.FormatHelper
+import com.app.ui.IconMapper
+import com.app.ui.screens.EditTransactionDialog
+import androidx.compose.ui.text.style.TextOverflow
 import java.util.*
 
 @Composable
@@ -116,20 +120,22 @@ data class EventStatusStyle(
 )
 
 fun getEventPriority(event: Event, totalSpent: Double, now: Long = System.currentTimeMillis()): Int {
+    val isEnded = FormatHelper.isEventEnded(event.endDate, now)
+    if (isEnded) return 5
+
     if (!event.isActive) return 6
 
     val isUpcoming = FormatHelper.isEventUpcoming(event.startDate, now)
-    val isEnded = FormatHelper.isEventEnded(event.endDate, now)
     val limit = event.limitAmount ?: 0.0
-    val isEndingSoon = !isEnded && !isUpcoming && (
+    val isEndingSoon = !isUpcoming && (
         (event.endDate != null && FormatHelper.getDaysDifference(now, event.endDate) <= 3) ||
         (limit > 0 && (totalSpent / limit) >= 0.8)
     )
     val isStartingSoon = isUpcoming && (FormatHelper.getDaysDifference(now, event.startDate) <= 7)
 
     return when {
-        !isEnded && !isUpcoming && !isEndingSoon -> 1
-        !isEnded && !isUpcoming && isEndingSoon -> 2
+        !isUpcoming && !isEndingSoon -> 1
+        !isUpcoming && isEndingSoon -> 2
         isStartingSoon -> 3
         isUpcoming -> 4
         else -> 5
@@ -137,6 +143,16 @@ fun getEventPriority(event: Event, totalSpent: Double, now: Long = System.curren
 }
 
 fun getEventStatusStyle(event: Event, totalSpent: Double, now: Long = System.currentTimeMillis()): EventStatusStyle {
+    val isEnded = FormatHelper.isEventEnded(event.endDate, now)
+    if (isEnded) {
+        return EventStatusStyle(
+            text = "Đã kết thúc",
+            dotColor = Color.White,
+            backgroundColor = Color(0xFF757575),
+            textColor = Color.White
+        )
+    }
+
     if (!event.isActive) {
         return EventStatusStyle(
             text = "Dừng",
@@ -276,6 +292,7 @@ fun EventManagementScreen(
     var eventToDelete by remember { mutableStateOf<Event?>(null) }
     var eventToView by remember { mutableStateOf<Event?>(null) }
     var showBottomSheetEvent by remember { mutableStateOf<Event?>(null) }
+    var editingTransaction by remember { mutableStateOf<Transaction?>(null) }
 
     var isReorderMode by remember { mutableStateOf(false) }
     var reorderListState by remember(events) { mutableStateOf(events.sortedBy { it.displayOrder }) }
@@ -1117,30 +1134,99 @@ fun EventManagementScreen(
                     )
 
                     if (eventTransactions.isNotEmpty()) {
+                        val categoriesList by viewModel.categoriesList.collectAsState()
                         Column(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             eventTransactions.sortedByDescending { it.timestamp }.forEach { tx ->
-                                Row(
+                                val isTransfer = tx.type == "TRANSFER"
+                                val cat = categoriesList.find { it.name == tx.categoryName }
+                                val catColor = if (isTransfer) Color(0xFF2196F3) else (cat?.let { FormatHelper.parseColor(it.colorHex) } ?: FormatHelper.parseColor(tx.categoryColor))
+                                val catIcon = if (isTransfer) "swap_horiz" else (cat?.iconName ?: tx.categoryIcon)
+
+                                Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(vertical = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .clickable { editingTransaction = tx },
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                    shape = RoundedCornerShape(14.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(tx.categoryName, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                        Text(FormatHelper.formatDate(tx.timestamp), fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        // Category Icon Badge
+                                        Box(
+                                            modifier = Modifier
+                                                .size(38.dp)
+                                                .clip(CircleShape)
+                                                .background(catColor.copy(alpha = 0.15f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isTransfer) Icons.AutoMirrored.Filled.CompareArrows else IconMapper.getIconByName(catIcon),
+                                                contentDescription = tx.categoryName,
+                                                tint = catColor,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+
+                                        // Info Column
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = tx.categoryName,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            val subInfo = buildString {
+                                                append(tx.walletName)
+                                                if (tx.note.isNotBlank()) {
+                                                    append(" • ")
+                                                    append(tx.note)
+                                                }
+                                            }
+                                            Text(
+                                                text = subInfo,
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${FormatHelper.formatTime(tx.timestamp)} ${FormatHelper.formatDate(tx.timestamp)}",
+                                                fontSize = 10.sp,
+                                                color = MaterialTheme.colorScheme.outline
+                                            )
+                                        }
+
+                                        // Amount & Edit hint
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Text(
+                                                text = "${if (tx.type == "EXPENSE") "-" else "+"}${FormatHelper.formatVND(tx.amount)}",
+                                                color = if (tx.type == "EXPENSE") MaterialTheme.colorScheme.error else Color(0xFF00E676),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp
+                                            )
+                                            Icon(
+                                                imageVector = Icons.Default.Edit,
+                                                contentDescription = "Sửa giao dịch",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
                                     }
-                                    Text(
-                                        text = "${if (tx.type == "EXPENSE") "-" else "+"}${FormatHelper.formatVND(tx.amount)}",
-                                        color = if (tx.type == "EXPENSE") MaterialTheme.colorScheme.error else Color(0xFF00E676),
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp
-                                    )
                                 }
-                                HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
                             }
                         }
                     } else {
@@ -1154,6 +1240,22 @@ fun EventManagementScreen(
                 }
             }
         }
+    }
+
+    if (editingTransaction != null) {
+        val categoriesList by viewModel.categoriesList.collectAsState()
+        val walletsList by viewModel.allWallets.collectAsState()
+        EditTransactionDialog(
+            tx = editingTransaction!!,
+            categoriesList = categoriesList,
+            walletsList = walletsList,
+            eventsList = events,
+            onDismiss = { editingTransaction = null },
+            onSave = { updatedTx ->
+                viewModel.updateTransaction(updatedTx)
+                editingTransaction = null
+            }
+        )
     }
 
     if (showAddEventDialog || eventToEdit != null) {
