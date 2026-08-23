@@ -167,6 +167,8 @@ fun MainContent(
             if (!isPermitted) {
                 showPermissionErrorPopup = true
             } else {
+                // Ensure service is actively bound on startup/unlock
+                com.app.service.BankNotificationListenerService.forceRebindService(context)
                 isScanningNotifications = true
                 showScanningBadge = true
                 val startTime = System.currentTimeMillis()

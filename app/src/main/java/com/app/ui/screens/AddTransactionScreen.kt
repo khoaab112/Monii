@@ -153,163 +153,168 @@ fun AddTransactionScreen(
         FormatHelper.evaluateExpression(rawExpression)
     }
 
-    // Compute intelligent category suggestions in real-time
+    // Compute intelligent category suggestions in real-time based on Amount, Time, Wallet, and Habits
     val smartSuggestions = remember(
         currentAmount,
-        note,
         selectedType,
         selectedWalletId,
         selectedTimestamp,
         allTransactions,
         filteredCategories
     ) {
-        if (currentAmount <= 0.0) return@remember emptyList<SmartCategorySuggestion>()
-        if (allTransactions.isEmpty() || filteredCategories.isEmpty()) return@remember emptyList<SmartCategorySuggestion>()
+        if (filteredCategories.isEmpty()) return@remember emptyList<SmartCategorySuggestion>()
 
         val typeTxs = allTransactions.filter { it.type == selectedType }
-        if (typeTxs.isEmpty()) return@remember emptyList<SmartCategorySuggestion>()
+        val calCurrent = Calendar.getInstance().apply { timeInMillis = selectedTimestamp }
+        val currHour = calCurrent.get(Calendar.HOUR_OF_DAY)
 
-        val latestTxCategory = typeTxs.maxByOrNull { it.timestamp }?.categoryName
-        val frequencyMap = typeTxs.groupBy { it.categoryName }.mapValues { it.value.size }
-
-        // Group similar amounts of the same type
+        // 1. Group past transactions by exact and range amounts
         val exactAmountMatches = if (currentAmount > 0.0) {
             typeTxs.filter { it.amount == currentAmount }
         } else {
             emptyList()
         }
 
-        filteredCategories.mapNotNull { cat ->
+        val rangeAmountMatches = if (currentAmount > 0.0) {
+            typeTxs.filter {
+                val maxAmt = Math.max(it.amount, currentAmount)
+                maxAmt > 0 && Math.abs(it.amount - currentAmount) / maxAmt <= 0.25
+            }
+        } else {
+            emptyList()
+        }
+
+        // 2. Filter transactions in the nearby time window (±2 hours)
+        val timeWindowTxs = typeTxs.filter { tx ->
+            val calTx = Calendar.getInstance().apply { timeInMillis = tx.timestamp }
+            val txHour = calTx.get(Calendar.HOUR_OF_DAY)
+            val diff = Math.abs(currHour - txHour)
+            diff <= 2 || diff >= 22
+        }
+
+        val frequencyMap = typeTxs.groupBy { it.categoryName }.mapValues { it.value.size }
+        val latestTxCategory = typeTxs.firstOrNull()?.categoryName
+
+        // Calculate probability score for each category
+        val scoredList = filteredCategories.map { cat ->
             val cName = cat.name
             var categoryScore = 0.0
             val reasonsList = mutableListOf<String>()
 
-            // 1. Base Frequency Usage bias (Max 15)
-            val occurrences = frequencyMap.getOrDefault(cName, 0)
-            if (occurrences > 0) {
-                categoryScore += Math.min(15.0, occurrences * 1.5)
-            }
-
-            // 2. Most recent transaction bias (10 pts)
-            if (cName == latestTxCategory) {
-                categoryScore += 10.0
-            }
-
-            // 3. Amount consistency bonus (from previous similar amounts)
-            if (exactAmountMatches.isNotEmpty()) {
-                val amountMatchesForCat = exactAmountMatches.filter { it.categoryName == cName }.size
-                val amountRatio = amountMatchesForCat.toDouble() / exactAmountMatches.size
-                if (amountMatchesForCat >= 1) {
-                    if (amountRatio >= 0.7 && exactAmountMatches.size >= 2) {
-                        categoryScore += 45.0
-                        reasonsList.add("Thường chi mức này")
-                    } else {
-                        categoryScore += 15.0
-                        reasonsList.add("Có chi mức này")
-                    }
-                }
-            }
-
-            // 4. Historical comparison logic
-            val txsToCheck = typeTxs.take(150)
-            var historicalMaxForCat = 0.0
-            var bestReasonForCat = ""
-
-            for (tx in txsToCheck) {
-                if (tx.categoryName != cName) continue
-
-                var txRawScore = 0.0
-                val currentTxReasons = mutableListOf<String>()
-
-                // Match note
-                if (note.isNotBlank() && tx.note.isNotBlank()) {
-                    val curNoteNorm = note.trim().lowercase()
-                    val txNoteNorm = tx.note.trim().lowercase()
-                    
-                    if (curNoteNorm == txNoteNorm) {
-                        txRawScore += 70.0
-                        currentTxReasons.add("Ghi chú y hệt")
-                    } else if (curNoteNorm.contains(txNoteNorm) || txNoteNorm.contains(curNoteNorm)) {
-                        txRawScore += 45.0
-                        currentTxReasons.add("Ghi chú tương đồng")
-                    }
-                }
-
-                // Match exact or close amounts
-                if (currentAmount > 0.0) {
-                    if (currentAmount == tx.amount) {
-                         txRawScore += 20.0
-                         currentTxReasons.add("Số tiền giống")
-                    } else {
-                        val diff = Math.abs(currentAmount - tx.amount)
-                        val maxAmt = Math.max(currentAmount, tx.amount)
-                        if (maxAmt > 0 && diff / maxAmt <= 0.1) {
-                            txRawScore += 15.0
-                            currentTxReasons.add("Số tiền tương tự")
-                        } else if (maxAmt > 0 && diff / maxAmt <= 0.25) {
-                            txRawScore += 10.0
-                            currentTxReasons.add("Số tiền hơi giống")
+            // A. Amount Pattern Matching (Up to 45 pts)
+            if (currentAmount > 0.0) {
+                if (exactAmountMatches.isNotEmpty()) {
+                    val exactCatCount = exactAmountMatches.count { it.categoryName == cName }
+                    if (exactCatCount > 0) {
+                        val exactRatio = exactCatCount.toDouble() / exactAmountMatches.size
+                        val amountScore = exactRatio * 40.0 + (if (exactCatCount >= 2) 5.0 else 0.0)
+                        categoryScore += amountScore
+                        if (exactRatio >= 0.5) {
+                            reasonsList.add("Thường chi mức này")
+                        } else {
+                            reasonsList.add("Có chi mức này")
                         }
                     }
-                }
-
-                // Match hours
-                val calCurrent = Calendar.getInstance().apply { timeInMillis = selectedTimestamp }
-                val calTx = Calendar.getInstance().apply { timeInMillis = tx.timestamp }
-                val currHour = calCurrent.get(Calendar.HOUR_OF_DAY)
-                val txHour = calTx.get(Calendar.HOUR_OF_DAY)
-                val hourDiff = Math.abs(currHour - txHour)
-                if (hourDiff == 0 || hourDiff == 23) {
-                    txRawScore += 10.0
-                    currentTxReasons.add("Cùng khung giờ")
-                } else if (hourDiff <= 2 || hourDiff >= 22) {
-                    txRawScore += 7.0
-                    currentTxReasons.add("Gần khung giờ")
-                }
-
-                // Match wallet
-                if (selectedWalletId != null && tx.walletId == selectedWalletId) {
-                    txRawScore += 5.0
-                    currentTxReasons.add("Cùng tài khoản")
-                }
-
-                // Recency preference
-                val daysAgo = (selectedTimestamp - tx.timestamp) / (24L * 60L * 60L * 1000L).toDouble()
-                val recencyWeight = 1.0 / (1.0 + Math.max(0.0, daysAgo) / 30.0)
-
-                val weightedScore = txRawScore * recencyWeight
-                if (weightedScore > historicalMaxForCat) {
-                    historicalMaxForCat = weightedScore
-                    bestReasonForCat = currentTxReasons.joinToString(", ")
+                } else if (rangeAmountMatches.isNotEmpty()) {
+                    val rangeCatCount = rangeAmountMatches.count { it.categoryName == cName }
+                    if (rangeCatCount > 0) {
+                        val rangeRatio = rangeCatCount.toDouble() / rangeAmountMatches.size
+                        categoryScore += rangeRatio * 30.0
+                        reasonsList.add("Số tiền tương tự")
+                    }
                 }
             }
 
-            categoryScore += historicalMaxForCat
-            
-            if (categoryScore > 10.0) {
-                val displayReason = if (bestReasonForCat.isNotEmpty()) {
-                    bestReasonForCat
-                } else if (reasonsList.isNotEmpty()) {
-                    reasonsList.joinToString(", ")
-                } else {
-                    "Danh mục quen thuộc"
+            // B. Time-of-Day Pattern Matching (Up to 35 pts)
+            if (timeWindowTxs.isNotEmpty()) {
+                val timeCatCount = timeWindowTxs.count { it.categoryName == cName }
+                if (timeCatCount > 0) {
+                    val timeRatio = timeCatCount.toDouble() / timeWindowTxs.size
+                    val timeScore = timeRatio * 35.0
+                    categoryScore += timeScore
+                    if (timeRatio >= 0.35) {
+                        reasonsList.add("Thói quen lúc ${currHour}h")
+                    } else if (reasonsList.isEmpty()) {
+                        reasonsList.add("Khung giờ này")
+                    }
                 }
-                SmartCategorySuggestion(
-                    category = cat,
-                    score = Math.min(100.0, categoryScore),
-                    reason = displayReason
-                )
             } else {
-                null
+                // Default natural time-of-day priors if history in this window is sparse
+                val isMorning = currHour in 6..9
+                val isNoon = currHour in 11..13
+                val isEvening = currHour in 17..20
+                val isNight = currHour in 21..23
+                if ((isMorning || isNoon || isEvening) && (cName == "Ăn uống" || cName == "Giải khát" || cName == "Xăng xe" || cName == "Di chuyển")) {
+                    categoryScore += 18.0
+                    reasonsList.add("Khung giờ quen thuộc")
+                } else if (isNight && (cName == "Giải trí" || cName == "Ăn uống")) {
+                    categoryScore += 15.0
+                    reasonsList.add("Khung giờ tối")
+                }
             }
-        }.sortedByDescending { it.score }.take(3)
+
+            // C. Wallet Context (Up to 10 pts)
+            if (selectedWalletId != null && typeTxs.isNotEmpty()) {
+                val walletTxs = typeTxs.filter { it.walletId == selectedWalletId }
+                if (walletTxs.isNotEmpty()) {
+                    val walletCatCount = walletTxs.count { it.categoryName == cName }
+                    if (walletCatCount > 0) {
+                        val walletRatio = walletCatCount.toDouble() / walletTxs.size
+                        categoryScore += walletRatio * 10.0
+                    }
+                }
+            }
+
+            // D. Usage Frequency & Recency (Up to 10 pts)
+            val occurrences = frequencyMap.getOrDefault(cName, 0)
+            if (occurrences > 0 && typeTxs.isNotEmpty()) {
+                val freqRatio = occurrences.toDouble() / typeTxs.size
+                categoryScore += freqRatio * 8.0
+            }
+            if (cName == latestTxCategory) {
+                categoryScore += 5.0
+            }
+
+            val finalScore = categoryScore.coerceIn(0.0, 100.0)
+            val displayReason = when {
+                reasonsList.isNotEmpty() -> reasonsList.first()
+                occurrences > 0 -> "Danh mục quen thuộc"
+                else -> "Gợi ý phù hợp"
+            }
+
+            SmartCategorySuggestion(
+                category = cat,
+                score = finalScore,
+                reason = displayReason
+            )
+        }
+
+        // Normalize top scores to realistic percentages
+        val maxScore = scoredList.maxOfOrNull { it.score } ?: 1.0
+        val topList = scoredList
+            .filter { it.score > 5.0 }
+            .sortedByDescending { it.score }
+            .take(3)
+
+        if (topList.isNotEmpty() && maxScore > 0.0) {
+            topList.map { item ->
+                val normalizedPct = if (maxScore > 50.0) {
+                    item.score
+                } else {
+                    (item.score / maxScore) * 50.0 + 15.0
+                }
+                item.copy(score = Math.min(99.0, Math.max(10.0, normalizedPct)))
+            }
+        } else {
+            emptyList()
+        }
     }
 
     // High confidence trigger for auto-selecting category
     LaunchedEffect(smartSuggestions) {
         if (!hasManuallySelected && smartSuggestions.isNotEmpty()) {
             val topSuggest = smartSuggestions.first()
-            if (topSuggest.score >= 65.0) {
+            if (topSuggest.score >= 50.0) {
                 if (selectedCategoryName != topSuggest.category.name) {
                     selectedCategoryName = topSuggest.category.name
                 }
@@ -325,17 +330,19 @@ fun AddTransactionScreen(
         counts
     }
 
-    val displayCategories = remember(filteredCategories, categoryUsageCounts) {
-        filteredCategories.sortedByDescending { cat ->
-            categoryUsageCounts.getOrDefault(cat.name, 0)
-        }
+    val displayCategories = remember(filteredCategories, smartSuggestions, categoryUsageCounts) {
+        val suggestionScoreMap = smartSuggestions.associate { it.category.name to it.score }
+        filteredCategories.sortedWith(
+            compareByDescending<FinanceCategory> { suggestionScoreMap[it.name] ?: 0.0 }
+                .thenByDescending { categoryUsageCounts[it.name] ?: 0 }
+        )
     }
 
-    LaunchedEffect(displayCategories) {
-        if (displayCategories.isNotEmpty() && selectedCategoryName.isBlank()) {
-            selectedCategoryName = displayCategories.first().name
-        } else if (displayCategories.isNotEmpty() && filteredCategories.none { it.name == selectedCategoryName }) {
-            selectedCategoryName = displayCategories.first().name
+    LaunchedEffect(displayCategories, selectedType) {
+        if (displayCategories.isNotEmpty()) {
+            if (selectedCategoryName.isBlank() || filteredCategories.none { it.name == selectedCategoryName }) {
+                selectedCategoryName = displayCategories.first().name
+            }
         }
     }
 
@@ -432,11 +439,7 @@ fun AddTransactionScreen(
             onValueChange = { rawExpression = it },
             label = "Số tiền phát sinh",
             autoFocus = false,
-            onDismissKeyboard = {
-                scope.launch {
-                    scrollState.animateScrollTo(0)
-                }
-            },
+            onDismissKeyboard = {},
             testTag = "tx_amount_text_field"
         )
 
@@ -1092,64 +1095,69 @@ fun AddTransactionScreen(
                             val isSelected = selectedCategoryName == cat.name
                             val categoryColor = try { FormatHelper.parseColor(cat.colorHex) } catch(e: Exception) { Color.Gray }
                             
-                            Box(modifier = Modifier.weight(1f).padding(bottom = 6.dp)) {
-                                val borderColor = if (isSelected) Color(0xFFF44336) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
-                                val bgColor = MaterialTheme.colorScheme.surface
-                                
-                                Row(
+                                Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(44.dp)
+                                        .weight(1f)
+                                        .padding(bottom = 6.dp)
                                         .clip(RoundedCornerShape(10.dp))
-                                        .background(bgColor)
-                                        .border(if (isSelected) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(10.dp))
                                         .clickable {
                                             selectedCategoryName = cat.name
                                             hasManuallySelected = true
                                         }
-                                        .padding(start = 6.dp, end = 2.dp)
-                                        .testTag("category_select_${cat.name}"),
-                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Box(
+                                    val borderColor = if (isSelected) Color(0xFFF44336) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                                    val bgColor = MaterialTheme.colorScheme.surface
+                                    
+                                    Row(
                                         modifier = Modifier
-                                            .size(26.dp)
-                                            .background(categoryColor.copy(alpha = 0.15f), CircleShape),
-                                        contentAlignment = Alignment.Center
+                                            .fillMaxWidth()
+                                            .height(44.dp)
+                                            .background(bgColor)
+                                            .border(if (isSelected) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(10.dp))
+                                            .padding(start = 6.dp, end = 2.dp)
+                                            .testTag("category_select_${cat.name}"),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(
-                                            imageVector = IconMapper.getIconByName(cat.iconName),
-                                            contentDescription = cat.name,
-                                            tint = categoryColor,
-                                            modifier = Modifier.size(14.dp)
+                                        Box(
+                                            modifier = Modifier
+                                                .size(26.dp)
+                                                .background(categoryColor.copy(alpha = 0.15f), CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = IconMapper.getIconByName(cat.iconName),
+                                                contentDescription = cat.name,
+                                                tint = categoryColor,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text(
+                                            text = cat.name,
+                                            fontSize = 10.sp, 
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = cat.name,
-                                        fontSize = 10.sp, 
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                
-                                if (isSelected) {
-                                    Box(
-                                        modifier = Modifier
-                                            .align(Alignment.BottomEnd)
-                                            .offset(x = 2.dp, y = 2.dp)
-                                            .size(14.dp)
-                                            .background(Color(0xFFF44336), CircleShape)
-                                            .border(1.dp, Color.White, CircleShape),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Check,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(9.dp)
-                                        )
+                                    
+                                    if (isSelected) {
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .offset(x = 2.dp, y = 2.dp)
+                                                .size(14.dp)
+                                                .background(Color(0xFFF44336), CircleShape)
+                                                .border(1.dp, Color.White, CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(9.dp)
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1166,7 +1174,9 @@ fun AddTransactionScreen(
             }
         }
 
-        } // Kết thúc khối if (!isTransfer)
+        // --- activeEventsForSelection is defined above ---
+        val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+        val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
         // 4 & 6. Ghi chú hóa đơn/mô tả
         OutlinedTextField(
@@ -1176,6 +1186,15 @@ fun AddTransactionScreen(
             leadingIcon = { Icon(imageVector = Icons.Default.EditNote, contentDescription = "Note") },
             modifier = Modifier.fillMaxWidth().testTag("tx_note_input"),
             singleLine = true,
+            keyboardOptions = KeyboardOptions(
+                imeAction = androidx.compose.ui.text.input.ImeAction.Done
+            ),
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                onDone = {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+            ),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = MaterialTheme.colorScheme.primary,
                 unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
@@ -1215,24 +1234,27 @@ fun AddTransactionScreen(
                 )
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .padding(end = 48.dp) // Tránh che icon lịch
+                        .matchParentSize()
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { showDateTimePicker() }
                 )
             }
         }
 
-        // --- activeEventsForSelection is defined above ---
-        val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-        val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        var isSubmitting by remember { mutableStateOf(false) }
+
+        val isFormValid = if (isTransfer) {
+            FormatHelper.evaluateExpression(rawExpression) > 0.0 && selectedWalletId != null && transferWalletId != null && transferWalletId != selectedWalletId
+        } else {
+            FormatHelper.evaluateExpression(rawExpression) > 0.0 && selectedWalletId != null && selectedCategoryName.isNotBlank()
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
         // 8. Lưu
         Button(
             onClick = {
+                if (isSubmitting) return@Button
                 focusManager.clearFocus()
                 keyboardController?.hide()
                 
@@ -1242,11 +1264,7 @@ fun AddTransactionScreen(
                     if (isTransfer) {
                         val targetId = transferWalletId
                         if (targetId != null && targetId != walletId) {
-                            val sourceWallet = wallets.firstOrNull { it.id == walletId }
-                            val targetWallet = wallets.firstOrNull { it.id == targetId }
-                            val sourceName = sourceWallet?.name ?: "Ví nguồn"
-                            val targetName = targetWallet?.name ?: "Ví đích"
-                            
+                            isSubmitting = true
                             val finalSourceId = if (selectedType == "EXPENSE") walletId else targetId
                             val finalDestId = if (selectedType == "EXPENSE") targetId else walletId
                             
@@ -1269,45 +1287,41 @@ fun AddTransactionScreen(
                             selectedCategoryName = ""
                             isTransfer = false
                             transferWalletId = null
+                            isSubmitting = false
                             scope.launch { scrollState.animateScrollTo(0) }
-                        } else {
-                            viewModel.showWarningNotification("Vui lòng chọn ví nhận khác nhau!")
                         }
                     } else {
                         // Normal manual transaction
-                        if (selectedCategoryName.isEmpty()) {
-                            viewModel.showWarningNotification("Vui lòng chọn hạng mục giao dịch!")
-                            return@Button
+                        if (selectedCategoryName.isNotBlank()) {
+                            isSubmitting = true
+                            viewModel.addTransaction(
+                                walletId = walletId,
+                                type = selectedType,
+                                amount = amount,
+                                categoryName = selectedCategoryName,
+                                note = note,
+                                timestamp = selectedTimestamp,
+                                isRecurring = false,
+                                recurrencePeriod = "NONE",
+                                eventId = if (isEventTransaction) selectedEventId else null
+                            )
+                            viewModel.showSuccessNotification("Thêm giao dịch mới thành công!")
+                            
+                            onSuccess()
                         }
-                        viewModel.addTransaction(
-                            walletId = walletId,
-                            type = selectedType,
-                            amount = amount,
-                            categoryName = selectedCategoryName,
-                            note = note,
-                            timestamp = selectedTimestamp,
-                            isRecurring = false,
-                            recurrencePeriod = "NONE",
-                            eventId = if (isEventTransaction) selectedEventId else null
-                        )
-                        viewModel.showSuccessNotification("Thêm giao dịch mới thành công!")
-                        
-                        onSuccess()
                     }
                 }
             },
-            enabled = if (isTransfer) {
-                FormatHelper.evaluateExpression(rawExpression) > 0.0 && selectedWalletId != null && transferWalletId != null && transferWalletId != selectedWalletId
-            } else {
-                FormatHelper.evaluateExpression(rawExpression) > 0.0 && selectedWalletId != null && selectedCategoryName.isNotEmpty()
-            },
+            enabled = isFormValid && !isSubmitting,
             modifier = Modifier.fillMaxWidth().height(52.dp).testTag("save_transaction_btn"),
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = if (selectedType == "EXPENSE") Color(0xFFF44336) else Color(0xFF4CAF50),
-                contentColor = Color.White
+                contentColor = Color.White,
+                disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
             ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp, disabledElevation = 0.dp)
         ) {
             Text(
                 text = "LƯU GIAO DỊCH",

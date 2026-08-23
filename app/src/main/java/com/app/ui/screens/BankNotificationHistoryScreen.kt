@@ -152,11 +152,17 @@ fun BankNotificationHistoryScreen(
         onResult = { /* No-op, just requesting is enough */ }
     )
 
+    var showOemTroubleshootDialog by remember { mutableStateOf(false) }
+
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                isPermitted = isNotificationServiceEnabled(context)
+                val permitted = isNotificationServiceEnabled(context)
+                isPermitted = permitted
+                if (permitted) {
+                    com.app.service.BankNotificationListenerService.forceRebindService(context)
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -952,6 +958,7 @@ fun BankNotificationHistoryScreen(
                                     onCheckedChange = { isChecked ->
                                         viewModel.setNotificationReaderEnabled(isChecked)
                                         if (isChecked) {
+                                            com.app.service.BankNotificationListenerService.forceRebindService(context)
                                             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                                                 if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                                                     postNotificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -986,7 +993,7 @@ fun BankNotificationHistoryScreen(
                                             )
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(
-                                                    text = "Yêu cầu quyền",
+                                                    text = "Yêu cầu quyền truy cập thông báo",
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 13.sp,
                                                     color = MaterialTheme.colorScheme.onErrorContainer
@@ -998,20 +1005,37 @@ fun BankNotificationHistoryScreen(
                                                 )
                                             }
                                         }
-                                        Button(
-                                            onClick = {
-                                                try {
-                                                    val intent = android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
-                                                    context.startActivity(intent)
-                                                } catch (e: Exception) {
-                                                    viewModel.showErrorNotification("Không thể mở cài đặt")
-                                                }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                            modifier = Modifier.height(36.dp).fillMaxWidth()
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            Text("Cấp quyền nhanh", fontSize = 12.sp)
+                                            Button(
+                                                onClick = {
+                                                    try {
+                                                        val intent = android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
+                                                        context.startActivity(intent)
+                                                    } catch (e: Exception) {
+                                                        viewModel.showErrorNotification("Không thể mở cài đặt")
+                                                    }
+                                                },
+                                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                                modifier = Modifier.height(36.dp).weight(1f)
+                                            ) {
+                                                Text("Cấp quyền nhanh", fontSize = 12.sp)
+                                            }
+
+                                            OutlinedButton(
+                                                onClick = { showOemTroubleshootDialog = true },
+                                                modifier = Modifier.height(36.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                            ) {
+                                                Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Cài đặt Xiaomi", fontSize = 11.sp)
+                                            }
                                         }
                                     }
                                 }
@@ -1022,23 +1046,60 @@ fun BankNotificationHistoryScreen(
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Row(
+                                    Column(
                                         modifier = Modifier.padding(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = "Ready Status",
-                                            tint = Color(0xFF2E7D32),
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = "Đã kích hoạt & Đang lắng nghe thông báo biến động số dư!",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF2E7D32)
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = "Ready Status",
+                                                tint = Color(0xFF2E7D32),
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = "Đang lắng nghe thông báo biến động số dư!",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF2E7D32),
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = {
+                                                    com.app.service.BankNotificationListenerService.forceRebindService(context)
+                                                    viewModel.showSuccessNotification("Đã kích hoạt lại kết nối dịch vụ đọc thông báo!")
+                                                },
+                                                modifier = Modifier.weight(1f).height(32.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF2E7D32))
+                                            ) {
+                                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Kích hoạt lại", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
+
+                                            OutlinedButton(
+                                                onClick = { showOemTroubleshootDialog = true },
+                                                modifier = Modifier.weight(1f).height(32.dp),
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                                                shape = RoundedCornerShape(8.dp),
+                                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.primary)
+                                            ) {
+                                                Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(14.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("Cài đặt Xiaomi/MIUI", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1048,6 +1109,92 @@ fun BankNotificationHistoryScreen(
             }
         }
     }
+    }
+
+    if (showOemTroubleshootDialog) {
+        AlertDialog(
+            onDismissRequest = { showOemTroubleshootDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.SettingsSuggest, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Text("Hướng dẫn Xiaomi / MIUI / HyperOS", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Để quét thông báo hoạt động liên tục và không bị hệ thống tự đóng, bạn hãy thiết lập 3 mục sau:",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), shape = RoundedCornerShape(8.dp)) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("1. Cài đặt bị hạn chế (Restricted Settings)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Vào Thông tin ứng dụng -> Nhấn dấu 3 chấm góc phải trên cùng -> Chọn 'Cho phép cài đặt bị hạn chế' (nếu có).", fontSize = 11.sp)
+                        }
+                    }
+
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), shape = RoundedCornerShape(8.dp)) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("2. Tự khởi chạy (Autostart)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Bật 'Tự khởi chạy' cho ứng dụng để nhận thông báo ngay cả khi đóng app.", fontSize = 11.sp)
+                        }
+                    }
+
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), shape = RoundedCornerShape(8.dp)) {
+                        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("3. Tiết kiệm pin (Battery Saver)", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Chọn 'Không giới hạn' (No restrictions) để MIUI/HyperOS không kill service chạy ngầm.", fontSize = 11.sp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    Button(
+                        onClick = {
+                            try {
+                                val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = android.net.Uri.parse("package:${context.packageName}")
+                                }
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                viewModel.showErrorNotification("Không thể mở Thông tin ứng dụng")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        contentPadding = PaddingValues(vertical = 4.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Mở Thông tin ứng dụng", fontSize = 12.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                val intent = android.content.Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                viewModel.showErrorNotification("Không thể mở Cài đặt Pin")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                        contentPadding = PaddingValues(vertical = 4.dp),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Mở Cài đặt Tiết kiệm pin", fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showOemTroubleshootDialog = false }) {
+                    Text("Đóng")
+                }
+            }
+        )
     }
 }
 

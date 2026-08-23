@@ -102,4 +102,34 @@ class NotificationParserTest {
         assertEquals("INCOME", result.type)
         assertEquals(1_250_000.0, result.amount, 0.0)
     }
+
+    @Test
+    fun parseExpandedNotificationTechcombank() {
+        val title = "Techcombank Mobile"
+        val text = "Tài khoản thanh toán 1903xxx\nBiến động số dư: -320.000 VND lúc 10:15 20/08/2026\nSố dư khả dụng: 5.430.000 VND\nNội dung: Thanh toan tien dien"
+        val packageName = "com.techcombank.mobile"
+
+        val result = NotificationParser.parse(title, text, packageName)
+
+        assertTrue(result.success)
+        assertEquals("Techcombank", result.bankName)
+        assertEquals("EXPENSE", result.type)
+        assertEquals(320_000.0, result.amount, 0.0)
+        assertEquals("Thanh toan tien dien", result.note)
+    }
+
+    @Test
+    fun parseVPBankNotificationWithDotSeparators() {
+        val title = "VPBank NEO"
+        val text = "TK 123xxx: So du thay doi +2.500.000 VND. So du: 15.000.000 VND. Ref: Tien thuong quy"
+        val packageName = "com.vpb.vpbankneo"
+
+        val result = NotificationParser.parse(title, text, packageName)
+
+        assertTrue(result.success)
+        assertEquals("VPBank", result.bankName)
+        assertEquals("INCOME", result.type)
+        assertEquals(2_500_000.0, result.amount, 0.0)
+        assertEquals("Tien thuong quy", result.note)
+    }
 }

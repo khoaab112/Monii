@@ -38,12 +38,29 @@ class BankNotificationListenerService : NotificationListenerService() {
             private set
 
         /**
-         * Re-bind the service. Some device's aggressive battery managers (like Xiaomi HyperOS)
-         * kill the service and never restart it. Toggling the component enabled state
-         * forces the OS to rebind.
+         * Force re-bind the service using PackageManager component toggle and requestRebind.
+         * Many aggressive OEM battery managers (like Xiaomi HyperOS / MIUI) kill background services.
+         * Toggling the component enabled state forces Android's NotificationManagerService to re-evaluate
+         * and rebind to this listener service immediately.
          */
-        fun requestRebindService(context: android.content.Context) {
+        fun forceRebindService(context: android.content.Context) {
             val componentName = android.content.ComponentName(context, BankNotificationListenerService::class.java)
+            val pm = context.packageManager
+            try {
+                pm.setComponentEnabledSetting(
+                    componentName,
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP
+                )
+                pm.setComponentEnabledSetting(
+                    componentName,
+                    android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                    android.content.pm.PackageManager.DONT_KILL_APP
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
             try {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
                     android.service.notification.NotificationListenerService.requestRebind(componentName)
@@ -51,6 +68,10 @@ class BankNotificationListenerService : NotificationListenerService() {
             } catch (e: Exception) {
                 e.printStackTrace()
             }
+        }
+
+        fun requestRebindService(context: android.content.Context) {
+            forceRebindService(context)
         }
     }
 
@@ -69,8 +90,14 @@ class BankNotificationListenerService : NotificationListenerService() {
         }
         
         val extras = sbn.notification?.extras ?: return
-        val title = extras.getString(Notification.EXTRA_TITLE) ?: ""
-        val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString() ?: ""
+        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
+            ?: extras.getCharSequence(Notification.EXTRA_TITLE_BIG)?.toString()
+            ?: ""
+        val text = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+            ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+            ?: extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()
+            ?: sbn.notification?.tickerText?.toString()
+            ?: ""
 
         if (text.isBlank()) return
 

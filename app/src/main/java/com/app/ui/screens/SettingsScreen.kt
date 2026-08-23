@@ -68,15 +68,28 @@ import java.util.Locale
 
 fun isNotificationServiceEnabled(context: android.content.Context): Boolean {
     val pkgName = context.packageName
-    val flat = android.provider.Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
-    if (!flat.isNullOrEmpty()) {
-        val names = flat.split(":")
-        for (name in names) {
-            val cn = android.content.ComponentName.unflattenFromString(name)
-            if (cn != null && cn.packageName == pkgName) {
-                return true
+    try {
+        val enabledPackages = androidx.core.app.NotificationManagerCompat.getEnabledListenerPackages(context)
+        if (enabledPackages.contains(pkgName)) {
+            return true
+        }
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+
+    try {
+        val flat = android.provider.Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
+        if (!flat.isNullOrEmpty()) {
+            val names = flat.split(":", ";")
+            for (name in names) {
+                val cn = android.content.ComponentName.unflattenFromString(name.trim())
+                if (cn != null && cn.packageName == pkgName) {
+                    return true
+                }
             }
         }
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
     return false
 }

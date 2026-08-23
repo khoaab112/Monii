@@ -261,8 +261,9 @@ object NotificationParser {
             .replace("€", "eur")
             .replace("£", "gbp")
 
-        // Remove the Account Balance (Số dư) so it doesn't get mistakenly parsed as the transaction amount
-        val balanceRegex = Regex("""\b(?:sd|số dư|so du|sodu)\s*(?:cuối|cuoi)?\s*[:]?\s*[+-]?\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?\s*(?:vnd|đ|d|usd|eur|gbp)?\b""")
+        // Remove the Account Balance (Số dư khả dụng / Số dư cuối / Số dư hiện tại...) so it doesn't get mistakenly parsed as the transaction amount
+        // Note: Do NOT remove if it's "biến động số dư" / "bien dong so du"
+        val balanceRegex = Regex("""(?<!biến động\s)(?<!bien dong\s)(?<!bđ\s)\b(?:sd|số dư|so du|sodu)\s*(?:khả dụng|kha dung|cuối|cuoi|hiện tại|hien tai|mới|moi|tk)?\s*[:]?\s*[+-]?\s*\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?\s*(?:vnd|đ|d|usd|eur|gbp)?\b""")
         cleanText = cleanText.replace(balanceRegex, " ")
 
         // Remove account/card masks containing 'xxx' (e.g. 82xxx686)

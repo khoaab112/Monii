@@ -594,7 +594,19 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
     // --- BANK NOTIFICATION READER LOGIC ---
     private suspend fun loadNotificationSettings() {
         val enabledSetting = repository.getSetting("notification_reader_enabled")
-        _notificationReaderEnabled.value = enabledSetting?.value == "true"
+        if (enabledSetting != null) {
+            _notificationReaderEnabled.value = enabledSetting.value == "true"
+        } else {
+            // First time launch or after app data reset:
+            val context = getApplication<Application>().applicationContext
+            val isPermitted = com.app.ui.screens.isNotificationServiceEnabled(context)
+            if (isPermitted) {
+                repository.saveSetting("notification_reader_enabled", "true")
+                _notificationReaderEnabled.value = true
+            } else {
+                _notificationReaderEnabled.value = false
+            }
+        }
         loadSmartMappings()
         loadNotificationLogs()
     }
@@ -773,14 +785,18 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
             try {
                 var serviceInstance = com.app.service.BankNotificationListenerService.instance
                 if (serviceInstance == null) {
-                    // Try to rebind service specifically for aggresive battery managers (like Xiaomi HyperOS)
-                    com.app.service.BankNotificationListenerService.requestRebindService(context)
-                    kotlinx.coroutines.delay(1500) // Wait up to 1.5s for service to bind
-                    serviceInstance = com.app.service.BankNotificationListenerService.instance
+                    // Try to rebind service specifically for aggressive battery managers (like Xiaomi HyperOS / MIUI)
+                    com.app.service.BankNotificationListenerService.forceRebindService(context)
+                    // Retry polling up to 2 seconds (500ms intervals) for service to bind
+                    for (retry in 1..4) {
+                        kotlinx.coroutines.delay(500)
+                        serviceInstance = com.app.service.BankNotificationListenerService.instance
+                        if (serviceInstance != null) break
+                    }
                 }
 
                 if (serviceInstance == null) {
-                    onError("Dịch vụ đọc thông báo chưa hoạt động. Hãy chắc chắn rằng bạn đã cấp quyền hoặc vui lòng khởi động lại dịch vụ bằng cách tắt/bật lại quyền.")
+                    onError("Dịch vụ đọc thông báo chưa sẵn sàng. Hãy chắc chắn rằng bạn đã cấp quyền hoặc vui lòng khởi động lại dịch vụ bằng cách tắt/bật lại quyền.")
                     return@launch
                 }
 
@@ -797,13 +813,21 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 var countAdded = 0
-                val wallets = repository.allWallets.firstOrNull() ?: emptyList()
+                val wallets = (repository.allWallets.firstOrNull() ?: emptyList()).filter { it.type != "SAVINGS" }
 
                 for (sbn in activeNotifications) {
                     val packageName = sbn.packageName ?: ""
+                    if (packageName == context.packageName) continue
+
                     val extras = sbn.notification?.extras ?: continue
-                    val title = extras.getString(android.app.Notification.EXTRA_TITLE) ?: ""
-                    val text = extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString() ?: ""
+                    val title = extras.getCharSequence(android.app.Notification.EXTRA_TITLE)?.toString()
+                        ?: extras.getCharSequence(android.app.Notification.EXTRA_TITLE_BIG)?.toString()
+                        ?: ""
+                    val text = extras.getCharSequence(android.app.Notification.EXTRA_BIG_TEXT)?.toString()
+                        ?: extras.getCharSequence(android.app.Notification.EXTRA_TEXT)?.toString()
+                        ?: extras.getCharSequence(android.app.Notification.EXTRA_SUB_TEXT)?.toString()
+                        ?: sbn.notification?.tickerText?.toString()
+                        ?: ""
 
                     if (text.isBlank()) continue
 
@@ -813,9 +837,15 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                     // Check for duplicate in current state/database logs
                     val logsSetting = repository.getSetting("notification_logs")?.value ?: "[]"
                     val jsonArray = try { org.json.JSONArray(logsSetting) } catch (e: Exception) { org.json.JSONArray() }
+                    val notificationKey = sbn.key ?: ""
                     var duplicate = false
                     for (i in 0 until jsonArray.length()) {
                         val obj = jsonArray.getJSONObject(i)
+                        val existingKey = obj.optString("notificationKey", "")
+                        if (existingKey.isNotBlank() && existingKey == notificationKey) {
+                            duplicate = true
+                            break
+                        }
                         if (obj.optString("text") == text && obj.optString("title") == title) {
                             duplicate = true
                             break
@@ -830,7 +860,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                         ?: wallets.firstOrNull()
 
                     val walletLabel = matchedWallet?.name ?: parsed.detectedWalletName
-                    saveLocalLog(title, text, parsed, "PENDING", walletLabel)
+                    saveLocalLog(title, text, parsed, "PENDING", walletLabel, notificationKey, sbn.postTime)
                     countAdded++
                 }
 
@@ -881,13 +911,18 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         text: String,
         parsed: com.app.service.NotificationParser.ParsedNotification,
         status: String,
-        walletName: String?
+        walletName: String?,
+        notificationKey: String = "",
+        postedAt: Long = System.currentTimeMillis()
     ) {
         val logsSetting = repository.getSetting("notification_logs")?.value ?: "[]"
         val jsonArray = try { org.json.JSONArray(logsSetting) } catch (e: Exception) { org.json.JSONArray() }
 
         val logObj = org.json.JSONObject()
-        logObj.put("timestamp", System.currentTimeMillis())
+        logObj.put("timestamp", postedAt)
+        if (notificationKey.isNotBlank()) {
+            logObj.put("notificationKey", notificationKey)
+        }
         logObj.put("title", title)
         logObj.put("text", text)
         logObj.put("bankName", parsed.bankName)
