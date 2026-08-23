@@ -1,7 +1,10 @@
 package com.app.ui.screens
 
+import android.app.DatePickerDialog
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -10,12 +13,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.CompareArrows
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.North
+import androidx.compose.material.icons.filled.South
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -24,16 +40,9 @@ import com.app.data.Transaction
 import com.app.ui.FinanceViewModel
 import com.app.ui.FormatHelper
 import com.app.ui.IconMapper
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.material.icons.filled.Event
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.North
-import androidx.compose.material.icons.filled.South
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,11 +52,51 @@ fun TimelineScreen(
     initialDateStr: String
 ) {
     val allTransactions by viewModel.allTransactions.collectAsState()
+    var currentDateStr by rememberSaveable(initialDateStr) { mutableStateOf(initialDateStr) }
+    val context = LocalContext.current
+
+    val currentCal = remember(currentDateStr) {
+        val cal = Calendar.getInstance()
+        try {
+            val date = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).parse(currentDateStr)
+            if (date != null) cal.time = date
+        } catch (e: Exception) {
+            // fallback
+        }
+        cal
+    }
+
+    val onPreviousDay: () -> Unit = {
+        val cal = Calendar.getInstance().apply { timeInMillis = currentCal.timeInMillis }
+        cal.add(Calendar.DAY_OF_MONTH, -1)
+        currentDateStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(cal.time)
+    }
+
+    val onNextDay: () -> Unit = {
+        val cal = Calendar.getInstance().apply { timeInMillis = currentCal.timeInMillis }
+        cal.add(Calendar.DAY_OF_MONTH, 1)
+        currentDateStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(cal.time)
+    }
+
+    val onSelectDate: () -> Unit = {
+        DatePickerDialog(
+            context,
+            { _, year, month, dayOfMonth ->
+                val newCal = Calendar.getInstance().apply {
+                    set(year, month, dayOfMonth)
+                }
+                currentDateStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(newCal.time)
+            },
+            currentCal.get(Calendar.YEAR),
+            currentCal.get(Calendar.MONTH),
+            currentCal.get(Calendar.DAY_OF_MONTH)
+        ).show()
+    }
     
     // Filter for the specific day
-    val dayTransactions = remember(allTransactions, initialDateStr) {
+    val dayTransactions = remember(allTransactions, currentDateStr) {
         allTransactions
-            .filter { FormatHelper.formatDate(it.timestamp) == initialDateStr }
+            .filter { FormatHelper.formatDate(it.timestamp) == currentDateStr }
             .sortedByDescending { it.timestamp }
     }
     
@@ -64,69 +113,95 @@ fun TimelineScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        if (dayTransactions.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(text = "Chưa có giao dịch", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        } else {
-            val seenKeys = remember { mutableSetOf<String>() }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 40.dp, top = 8.dp)
-            ) {
-                item {
-                    Box(modifier = Modifier.staggeredEntrance(0, "header", seenKeys)) {
-                        TimelineDayHeaderCards(
-                            dateStr = initialDateStr,
-                            totalIncome = totalIncome,
-                            totalExpense = totalExpense
-                        )
-                    }
+        val seenKeys = remember(currentDateStr) { mutableSetOf<String>() }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 40.dp, top = 8.dp)
+        ) {
+            item(key = "header_$currentDateStr") {
+                Box(modifier = Modifier.staggeredEntrance(0, "header", seenKeys)) {
+                    TimelineDayHeaderCards(
+                        dateStr = currentDateStr,
+                        totalIncome = totalIncome,
+                        totalExpense = totalExpense,
+                        onPreviousDay = onPreviousDay,
+                        onNextDay = onNextDay,
+                        onSelectDate = onSelectDate
+                    )
+                }
+                if (dayTransactions.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(12.dp))
                     Box(modifier = Modifier.staggeredEntrance(1, "summary_table", seenKeys)) {
                         TimelineDailySummaryTable(dayTransactions = dayTransactions)
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                 }
-                
+            }
+
+            if (dayTransactions.isEmpty()) {
+                item(key = "empty_$currentDateStr") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 56.dp, horizontal = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Event,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Text(
+                                text = "Chưa có giao dịch trong ngày $currentDateStr",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            } else {
                 itemsIndexed(dayTransactions, key = { index, tx -> "${tx.id}_${tx.timestamp}_$index" }) { index, tx -> 
                     Box(modifier = Modifier.staggeredEntrance(2 + index, "tx_${tx.id}_${tx.timestamp}_$index", seenKeys)) {
                         TimelineTransactionUpdated(tx = tx, isLast = index == dayTransactions.size - 1)
                     }
                 }
 
-                if (dayTransactions.isNotEmpty()) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .staggeredEntrance(2 + dayTransactions.size, "footer", seenKeys)
-                                .padding(top = 16.dp, bottom = 32.dp, start = 32.dp, end = 32.dp),
-                            contentAlignment = Alignment.Center
+                item(key = "footer_$currentDateStr") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .staggeredEntrance(2 + dayTransactions.size, "footer", seenKeys)
+                            .padding(top = 16.dp, bottom = 32.dp, start = 32.dp, end = 32.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                HorizontalDivider(
-                                    modifier = Modifier.weight(1f),
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                    thickness = 1.dp
-                                )
-                                Text(
-                                    text = "Hết",
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Normal,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    modifier = Modifier.padding(horizontal = 16.dp)
-                                )
-                                HorizontalDivider(
-                                    modifier = Modifier.weight(1f),
-                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                                    thickness = 1.dp
-                                )
-                            }
+                            HorizontalDivider(
+                                modifier = Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                                thickness = 1.dp
+                            )
+                            Text(
+                                text = "Hết",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Normal,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                            HorizontalDivider(
+                                modifier = Modifier.weight(1f),
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                                thickness = 1.dp
+                            )
                         }
                     }
                 }
@@ -276,7 +351,10 @@ fun TimelineTransactionUpdated(tx: Transaction, isLast: Boolean) {
 fun TimelineDayHeaderCards(
     dateStr: String,
     totalIncome: Double,
-    totalExpense: Double
+    totalExpense: Double,
+    onPreviousDay: () -> Unit = {},
+    onNextDay: () -> Unit = {},
+    onSelectDate: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -284,28 +362,71 @@ fun TimelineDayHeaderCards(
             .padding(horizontal = 20.dp, vertical = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // 1. Centered Date Pill (Nút ngày hình viên thuốc - đã bỏ mũi tên trỏ xuống)
-        Surface(
-            shape = CircleShape,
-            color = Color(0xFFEDE9FE),
-            modifier = Modifier.padding(bottom = 10.dp)
+        // 1. Centered Date Pill with Previous and Next Buttons (Hàng chuyển +-1 ngày)
+        Row(
+            modifier = Modifier.padding(bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            // Previous Day Button (Nhỏ gọn, không dính sát)
+            Box(
+                modifier = Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFEDE9FE))
+                    .clickable(onClick = onPreviousDay),
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.Event,
-                    contentDescription = "Ngày",
+                    imageVector = Icons.Default.ChevronLeft,
+                    contentDescription = "Ngày trước",
                     tint = Color(0xFF6D28D9),
                     modifier = Modifier.size(16.dp)
                 )
-                Text(
-                    text = dateStr,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF6D28D9)
+            }
+
+            // Date Pill (Clickable to open DatePickerDialog)
+            Surface(
+                shape = CircleShape,
+                color = Color(0xFFEDE9FE),
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable { onSelectDate() }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Event,
+                        contentDescription = "Ngày",
+                        tint = Color(0xFF6D28D9),
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = dateStr,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF6D28D9)
+                    )
+                }
+            }
+
+            // Next Day Button (Nhỏ gọn, không dính sát)
+            Box(
+                modifier = Modifier
+                    .size(26.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFFEDE9FE))
+                    .clickable(onClick = onNextDay),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = "Ngày sau",
+                    tint = Color(0xFF6D28D9),
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }

@@ -62,6 +62,7 @@ import java.text.SimpleDateFormat
 import androidx.compose.foundation.Image
 import androidx.compose.ui.platform.LocalContext
 import com.app.R
+import com.app.ui.components.AppModalBottomSheet
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -129,6 +130,7 @@ fun HistoryScreen(
     var showQuickAddDialogByDay by remember { mutableStateOf<CalendarDay?>(null) }
 
     var showFilterSheet by remember { mutableStateOf(false) }
+    var showFilterSummarySheet by rememberSaveable { mutableStateOf(false) }
 
     // --- TIME FILTER STATES ---
     var activeTimeFilterMode by rememberSaveable { mutableStateOf("MONTH") } // ALL, WEEK, DAY, MONTH, YEAR, RANGE
@@ -587,6 +589,46 @@ fun HistoryScreen(
         if (parts.isEmpty()) "Mọi giao dịch (Không có bộ lọc)" else parts.joinToString(" • ")
     }
 
+    val selectedRangeStr = remember(
+        activeTimeFilterMode,
+        selectedCustomDate,
+        selectedCustomMonth,
+        selectedCustomMonthYear,
+        selectedCustomYear,
+        selectedRangeStart,
+        selectedRangeEnd
+    ) {
+        when (activeTimeFilterMode) {
+            "ALL" -> "Mọi lúc"
+            "DAY" -> selectedCustomDate?.let { 
+                SimpleDateFormat("dd/MM/yyyy", java.util.Locale.Builder().setLanguage("vi").setRegion("VN").build()).format(it.time) 
+            } ?: "Một ngày"
+            "WEEK" -> "1 Tuần qua"
+            "RANGE" -> if (selectedRangeStart != null && selectedRangeEnd != null) {
+                val s = SimpleDateFormat("dd/MM/yyyy", java.util.Locale.Builder().setLanguage("vi").setRegion("VN").build()).format(selectedRangeStart.time)
+                val e = SimpleDateFormat("dd/MM/yyyy", java.util.Locale.Builder().setLanguage("vi").setRegion("VN").build()).format(selectedRangeEnd.time)
+                "$s - $e"
+            } else "Khoảng ngày"
+            "MONTH" -> "Thg ${selectedCustomMonth + 1}/$selectedCustomMonthYear"
+            "YEAR" -> "Năm $selectedCustomYear"
+            else -> "Mọi lúc"
+        }
+    }
+
+    if (showFilterSummarySheet) {
+        FilterSummaryBottomSheet(
+            filteredTransactions = filteredTransactions,
+            walletsList = walletsList,
+            filterSummary = filterSummary,
+            searchQuery = searchQuery,
+            selectedTypeFilter = selectedTypeFilter,
+            selectedCategoryFilter = selectedCategoryFilter,
+            activeTimeFilterMode = activeTimeFilterMode,
+            selectedRangeStr = selectedRangeStr,
+            onDismissRequest = { showFilterSummarySheet = false }
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -983,20 +1025,44 @@ fun HistoryScreen(
                             )
                         }
                         
-                        // Reset Button option if any filter is active
-                        if (searchQuery.isNotEmpty() || selectedTypeFilter != "ALL" || selectedCategoryFilter != "ALL" || activeTimeFilterMode != "ALL") {
-                            TextButton(
-                                onClick = {
-                                    viewModel.setSearchQuery("")
-                                    viewModel.setTypeFilter("ALL")
-                                    viewModel.setCategoryFilter("ALL")
-                                    activeTimeFilterMode = "ALL"
-                                },
-                                modifier = Modifier.align(Alignment.End)
+                        // Action buttons in expanded filter view
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilledTonalButton(
+                                onClick = { showFilterSummarySheet = true },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                colors = ButtonDefaults.filledTonalButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ),
+                                modifier = Modifier.testTag("view_filter_summary_btn")
                             ) {
-                                Icon(imageVector = Icons.Default.Refresh, contentDescription = "Xóa lọc", modifier = Modifier.size(16.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Assessment,
+                                    contentDescription = "Tổng hợp",
+                                    modifier = Modifier.size(16.dp)
+                                )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("Bỏ toàn bộ lọc", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("Xem kết quả tổng hợp", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            if (searchQuery.isNotEmpty() || selectedTypeFilter != "ALL" || selectedCategoryFilter != "ALL" || activeTimeFilterMode != "ALL") {
+                                TextButton(
+                                    onClick = {
+                                        viewModel.setSearchQuery("")
+                                        viewModel.setTypeFilter("ALL")
+                                        viewModel.setCategoryFilter("ALL")
+                                        activeTimeFilterMode = "ALL"
+                                    }
+                                ) {
+                                    Icon(imageVector = Icons.Default.Refresh, contentDescription = "Xóa lọc", modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Bỏ toàn bộ lọc", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
@@ -1006,6 +1072,49 @@ fun HistoryScreen(
         }
         
         if (displayMode == "LIST") {
+            if (!isFiltersExpanded) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 2.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilledTonalButton(
+                        onClick = { showFilterSummarySheet = true },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                        modifier = Modifier.testTag("view_filter_summary_collapsed_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Assessment,
+                            contentDescription = "Tổng hợp",
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Xem kết quả tổng hợp", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    if (searchQuery.isNotEmpty() || selectedTypeFilter != "ALL" || selectedCategoryFilter != "ALL" || activeTimeFilterMode != "ALL") {
+                        TextButton(
+                            onClick = {
+                                viewModel.setSearchQuery("")
+                                viewModel.setTypeFilter("ALL")
+                                viewModel.setCategoryFilter("ALL")
+                                activeTimeFilterMode = "ALL"
+                            }
+                        ) {
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = "Xóa lọc", modifier = Modifier.size(13.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Bỏ lọc", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
             // Transaction Timeline List with daily summaries
@@ -3023,5 +3132,514 @@ private fun formatCompactVND(amount: Double): String {
             "${formatted}k"
         }
         else -> "%.0f".format(Locale.US, amount)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FilterSummaryBottomSheet(
+    filteredTransactions: List<Transaction>,
+    walletsList: List<Wallet>,
+    filterSummary: String,
+    searchQuery: String,
+    selectedTypeFilter: String,
+    selectedCategoryFilter: String,
+    activeTimeFilterMode: String,
+    selectedRangeStr: String,
+    onDismissRequest: () -> Unit
+) {
+    val savingsWalletIds = remember(walletsList) {
+        walletsList.filter { it.type == "SAVINGS" }.map { it.id }.toSet()
+    }
+    val financialSummary = remember(filteredTransactions, savingsWalletIds) {
+        com.app.ui.calculateRealFinancialSummary(filteredTransactions, savingsWalletIds)
+    }
+    val totalIncome = financialSummary.realIncome
+    val totalExpense = financialSummary.realExpense
+
+    val categoryStats = remember(filteredTransactions) {
+        filteredTransactions.filter { it.type != "TRANSFER" }
+            .groupBy { Triple(it.categoryName, it.categoryIcon, it.categoryColor) }
+            .map { (cat, txs) ->
+                val income = txs.filter { it.type == "INCOME" }.sumOf { it.amount }
+                val expense = txs.filter { it.type == "EXPENSE" }.sumOf { it.amount }
+                Triple(cat, income, expense)
+            }
+            .filter { it.second > 0 || it.third > 0 }
+            .sortedByDescending { it.second + it.third }
+    }
+
+    val totalTransfer = remember(filteredTransactions) {
+        filteredTransactions.filter { it.type == "TRANSFER" }.sumOf { it.amount }
+    }
+    val hasTransfer = totalTransfer > 0.0
+    val hasIncome = categoryStats.any { it.second > 0 } || hasTransfer
+    val hasExpense = categoryStats.any { it.third > 0 } || hasTransfer
+
+    AppModalBottomSheet(
+        onDismissRequest = onDismissRequest,
+        title = "TỔNG HỢP KẾT QUẢ",
+        footer = {
+            Button(
+                onClick = onDismissRequest,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("ĐÓNG", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        }
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // 1. Filter Criteria Tags (Các yếu tố lọc)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "TIÊU CHÍ BỘ LỌC ĐANG ÁP DỤNG",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 0.5.sp
+                )
+                
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Time filter tag
+                    AssistChip(
+                        onClick = {},
+                        label = { Text(selectedRangeStr, fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                            labelColor = MaterialTheme.colorScheme.onSurface
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                    )
+
+                    // Type filter tag
+                    if (selectedTypeFilter != "ALL") {
+                        AssistChip(
+                            onClick = {},
+                            label = { Text(if (selectedTypeFilter == "EXPENSE") "Khoản Chi" else "Khoản Thu", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (selectedTypeFilter == "EXPENSE") Icons.Default.North else Icons.Default.South,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = if (selectedTypeFilter == "EXPENSE") Color(0xFFDC2626) else Color(0xFF16A34A)
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = (if (selectedTypeFilter == "EXPENSE") Color(0xFFFEE2E2) else Color(0xFFDCFCE7)).copy(alpha = 0.5f),
+                                labelColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        )
+                    }
+
+                    // Category filter tag
+                    if (selectedCategoryFilter != "ALL") {
+                        AssistChip(
+                            onClick = {},
+                            label = { Text("Hạng mục: $selectedCategoryFilter", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Category,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                labelColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        )
+                    }
+
+                    // Search query tag
+                    if (searchQuery.isNotBlank()) {
+                        AssistChip(
+                            onClick = {},
+                            label = { Text("\"$searchQuery\"", fontSize = 11.sp, fontWeight = FontWeight.SemiBold) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            },
+                            colors = AssistChipDefaults.assistChipColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                labelColor = MaterialTheme.colorScheme.onSurface
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        )
+                    }
+
+                    // Transaction count tag
+                    AssistChip(
+                        onClick = {},
+                        label = { Text("${filteredTransactions.size} giao dịch", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.ReceiptLong,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                            labelColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        ),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    )
+                }
+            }
+
+            // 2. Summary Cards (2 thẻ Tổng thu & Tổng chi - thiết kế chuẩn Ảnh 2)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Thẻ Tổng thu
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFF8FAFC),
+                    border = BorderStroke(1.dp, Color(0xFFE2E8F0))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFDCFCE7)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.South,
+                                contentDescription = "Tổng thu",
+                                tint = Color(0xFF16A34A),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = "Tổng thu",
+                                fontSize = 11.sp,
+                                color = Color(0xFF64748B),
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (totalIncome > 0) "+${FormatHelper.formatVND(totalIncome)}" else "0 đ",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF16A34A),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                // Thẻ Tổng chi
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFFFFF5F5),
+                    border = BorderStroke(1.dp, Color(0xFFFEE2E2))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFFEE2E2)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.North,
+                                contentDescription = "Tổng chi",
+                                tint = Color(0xFFDC2626),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = "Tổng chi",
+                                fontSize = 11.sp,
+                                color = Color(0xFF64748B),
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = if (totalExpense > 0) "-${FormatHelper.formatVND(totalExpense)}" else "0 đ",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFDC2626),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 3. Category Breakdown Table (Thiết kế Bảng thu chi theo danh mục - chuẩn Ảnh 2)
+            if (categoryStats.isNotEmpty() || hasTransfer) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "BẢNG THU CHI THEO HẠNG MỤC",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 0.5.sp
+                    )
+
+                    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, borderColor, RoundedCornerShape(12.dp))
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                    ) {
+                        // Table Column Headers Row (Thu / Chi)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(IntrinsicSize.Min)
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1.1f)
+                                    .fillMaxHeight()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                Text("Hạng mục", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                            }
+
+                            if (hasIncome) {
+                                Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(borderColor))
+                                Box(
+                                    modifier = Modifier.weight(1f).fillMaxHeight().padding(8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("Thu", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                }
+                            }
+                            if (hasExpense) {
+                                Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(borderColor))
+                                Box(
+                                    modifier = Modifier.weight(1f).fillMaxHeight().padding(8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("Chi", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = borderColor)
+
+                        // Category Rows
+                        categoryStats.forEachIndexed { index, stat ->
+                            val (cat, income, expense) = stat
+                            val rowBgColor = try {
+                                FormatHelper.parseColor(cat.third).copy(alpha = 0.08f)
+                            } catch (e: Exception) {
+                                Color.Transparent
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(IntrinsicSize.Min)
+                                    .background(rowBgColor),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                // Category Col
+                                Row(
+                                    modifier = Modifier.weight(1.1f).fillMaxHeight().padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .background(FormatHelper.parseColor(cat.third)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = IconMapper.getIconByName(cat.second),
+                                            contentDescription = cat.first,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = cat.first,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                if (hasIncome) {
+                                    Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(borderColor))
+                                    Box(
+                                        modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 10.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.CenterEnd
+                                    ) {
+                                        if (income > 0) {
+                                            Text(
+                                                text = FormatHelper.formatVND(income),
+                                                fontSize = 12.sp,
+                                                color = Color(0xFF16A34A),
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (hasExpense) {
+                                    Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(borderColor))
+                                    Box(
+                                        modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 10.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.CenterEnd
+                                    ) {
+                                        if (expense > 0) {
+                                            Text(
+                                                text = FormatHelper.formatVND(expense),
+                                                fontSize = 12.sp,
+                                                color = Color(0xFFDC2626),
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            if (index < categoryStats.size - 1 || hasTransfer) {
+                                HorizontalDivider(color = borderColor.copy(alpha = 0.5f))
+                            }
+                        }
+
+                        // Transfer Row (if any)
+                        if (hasTransfer) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(IntrinsicSize.Min)
+                                    .background(Color(0xFF2196F3).copy(alpha = 0.08f)),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1.1f).fillMaxHeight().padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF2196F3)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.CompareArrows,
+                                            contentDescription = "Nội bộ",
+                                            tint = Color.White,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = "Nội bộ",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+
+                                if (hasIncome) {
+                                    Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(borderColor))
+                                    Box(
+                                        modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 10.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.CenterEnd
+                                    ) {
+                                        Text(
+                                            text = "±${FormatHelper.formatVND(totalTransfer)}",
+                                            fontSize = 12.sp,
+                                            color = Color(0xFF2196F3),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+
+                                if (hasExpense) {
+                                    Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(borderColor))
+                                    Box(
+                                        modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 10.dp, vertical = 8.dp),
+                                        contentAlignment = Alignment.CenterEnd
+                                    ) {
+                                        Text(
+                                            text = "±${FormatHelper.formatVND(totalTransfer)}",
+                                            fontSize = 12.sp,
+                                            color = Color(0xFF2196F3),
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Không có dữ liệu giao dịch trong bộ lọc",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
     }
 }
