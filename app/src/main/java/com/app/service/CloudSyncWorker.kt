@@ -45,14 +45,20 @@ class CloudSyncWorker(
             val repository = com.app.data.FinanceRepository(database.financeDao(), database)
             val exportedData = repository.exportAllDataAsJson()
 
-val folderName = "[APP_FINANCE]"
+            val folderName = "[APP_FINANCE]"
             val fileName = "finance_backup.json"
-            val client = OkHttpClient()
+            val client = OkHttpClient.Builder()
+                .connectTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .writeTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                .retryOnConnectionFailure(true)
+                .build()
 
             // 1. Search for folder
             var folderId: String? = null
             val searchFolderRequest = Request.Builder()
-                .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder'&spaces=drive")
+                .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive")
                 .header("Authorization", "Bearer $token")
                 .build()
             val searchFolderResponse = client.newCall(searchFolderRequest).execute()
@@ -91,10 +97,10 @@ val folderName = "[APP_FINANCE]"
                 return@withContext Result.retry() // Failed to find or create folder
             }
 
-            // 3. Search for file INSIDE folder
-            var fileId: String? = null
+            // 3. Search for existing backup files in folder
+            val existingFileIds = mutableListOf<String>()
             val searchFileRequest = Request.Builder()
-                .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents&spaces=drive")
+                .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents and trashed=false&spaces=drive")
                 .header("Authorization", "Bearer $token")
                 .build()
             
@@ -104,8 +110,10 @@ val folderName = "[APP_FINANCE]"
                 json?.let {
                     val jsonObj = JSONObject(it)
                     val files = jsonObj.optJSONArray("files")
-                    if (files != null && files.length() > 0) {
-                        fileId = files.getJSONObject(0).getString("id")
+                    if (files != null) {
+                        for (i in 0 until files.length()) {
+                            existingFileIds.add(files.getJSONObject(i).getString("id"))
+                        }
                     }
                 }
             }
@@ -113,42 +121,49 @@ val folderName = "[APP_FINANCE]"
             val localTxArray = localJson.optJSONArray("transactions")
             val isLocalTxEmpty = localTxArray == null || localTxArray.length() == 0
 
-            if (fileId != null && isLocalTxEmpty) {
+            if (existingFileIds.isNotEmpty() && isLocalTxEmpty) {
                 android.util.Log.w("CloudSyncWorker", "Aborted cloud sync: local data is empty but Google Drive contains a backup file. Avoided overwriting.")
                 return@withContext Result.success()
             }
 
-            val metadata = JSONObject()
-            metadata.put("name", fileName)
-            metadata.put("mimeType", "application/json")
-            if (fileId == null) {
-                metadata.put("parents", org.json.JSONArray().put(folderId))
+            val metadata = JSONObject().apply {
+                put("name", fileName)
+                put("mimeType", "application/json")
+                put("parents", org.json.JSONArray().put(folderId))
             }
-            
-            val requestBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart("metadata", null, metadata.toString().toRequestBody("application/json; charset=UTF-8".toMediaTypeOrNull()))
-                .addFormDataPart("file", fileName, exportedData.toRequestBody("application/json; charset=UTF-8".toMediaTypeOrNull()))
+
+            val mediaTypeRelated = "multipart/related".toMediaTypeOrNull()
+            val jsonType = "application/json; charset=UTF-8".toMediaTypeOrNull()
+
+            val multipartBody = MultipartBody.Builder()
+                .setType(mediaTypeRelated!!)
+                .addPart(metadata.toString().toRequestBody(jsonType))
+                .addPart(exportedData.toRequestBody(jsonType))
                 .build()
 
-            val uploadUrl = if (fileId == null) {
-                "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
-            } else {
-                "https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=multipart"
-            }
-            
-            val requestBuilder = Request.Builder()
-                .url(uploadUrl)
+            val uploadRequest = Request.Builder()
+                .url("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
                 .header("Authorization", "Bearer $token")
+                .post(multipartBody)
+                .build()
             
-            if (fileId != null) {
-                requestBuilder.patch(requestBody)
-            } else {
-                requestBuilder.post(requestBody)
-            }
-            
-            val response = client.newCall(requestBuilder.build()).execute()
+            val response = client.newCall(uploadRequest).execute()
             if (response.isSuccessful) {
+                val newJson = response.body?.string()
+                val newFileId = if (newJson != null) JSONObject(newJson).optString("id") else null
+
+                for (oldId in existingFileIds) {
+                    if (oldId != newFileId) {
+                        try {
+                            val deleteRequest = Request.Builder()
+                                .url("https://www.googleapis.com/drive/v3/files/$oldId")
+                                .header("Authorization", "Bearer $token")
+                                .delete()
+                                .build()
+                            client.newCall(deleteRequest).execute()
+                        } catch (ignored: Exception) {}
+                    }
+                }
                 return@withContext Result.success()
             } else {
                 return@withContext Result.retry()

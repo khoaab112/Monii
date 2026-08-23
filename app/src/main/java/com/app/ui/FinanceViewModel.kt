@@ -2815,6 +2815,16 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
         showSuccessNotification("Hợp nhất dữ liệu đám mây thành công!")
     }
 
+    private fun createDriveHttpClient(): okhttp3.OkHttpClient {
+        return okhttp3.OkHttpClient.Builder()
+            .connectTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .readTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .writeTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .callTimeout(0, java.util.concurrent.TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
     fun mergeFromDrive(context: android.content.Context) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             _syncStatus.value = "SYNCING"
@@ -2836,7 +2846,7 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 
                 val folderName = "[APP_FINANCE]"
                 val fileName = "finance_backup.json"
-                val client = okhttp3.OkHttpClient()
+                val client = createDriveHttpClient()
                 
                 var folderId: String? = null
                 val searchFolderRequest = okhttp3.Request.Builder()
@@ -3123,14 +3133,14 @@ class FinanceViewModel(application: Application) : AndroidViewModel(application)
                 val exportedData = repository.exportAllDataAsJson()
                 addLog("Đã nén xong dữ liệu nội bộ.")
                 
-val folderName = "[APP_FINANCE]"
+                val folderName = "[APP_FINANCE]"
                 val fileName = "finance_backup.json"
-                val client = okhttp3.OkHttpClient()
+                val client = createDriveHttpClient()
                 
                 addLog("Đang kết nối thư mục sao lưu...")
                 var folderId: String? = null
                 val searchFolderRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder'&spaces=drive")
+                    .url("https://www.googleapis.com/drive/v3/files?q=name='${folderName}' and mimeType='application/vnd.google-apps.folder' and trashed=false&spaces=drive")
                     .header("Authorization", "Bearer ${token}")
                     .build()
                 val searchFolderResponse = client.newCall(searchFolderRequest).execute()
@@ -3172,9 +3182,9 @@ val folderName = "[APP_FINANCE]"
                     return@launch
                 }
                 
-                var fileId: String? = null
+                val existingFileIds = mutableListOf<String>()
                 val searchFileRequest = okhttp3.Request.Builder()
-                    .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents&spaces=drive")
+                    .url("https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents and trashed=false&spaces=drive")
                     .header("Authorization", "Bearer ${token}")
                     .build()
                 
@@ -3184,57 +3194,72 @@ val folderName = "[APP_FINANCE]"
                     if (json != null) {
                         val jsonObj = org.json.JSONObject(json)
                         val files = jsonObj.optJSONArray("files")
-                        if (files != null && files.length() > 0) {
-                            fileId = files.getJSONObject(0).getString("id")
-                            addLog("Tìm thấy file sao lưu cũ trong thư mục. Đang ghi đè...")
-                        } else {
-                            addLog("Đang tạo file sao lưu mới trong thư mục...")
+                        if (files != null) {
+                            for (i in 0 until files.length()) {
+                                existingFileIds.add(files.getJSONObject(i).getString("id"))
+                            }
                         }
                     }
                 }
-                
-                val metadata = org.json.JSONObject()
-                metadata.put("name", fileName)
-                metadata.put("mimeType", "application/json")
-                if (fileId == null) {
-                    metadata.put("parents", org.json.JSONArray().put(folderId))
+
+                if (existingFileIds.isNotEmpty()) {
+                    addLog("Tìm thấy file sao lưu cũ trong thư mục. Đang ghi đè...")
+                } else {
+                    addLog("Đang tạo file sao lưu mới trong thư mục...")
                 }
                 
-                val mediaType = "application/json; charset=UTF-8".toMediaTypeOrNull()
-                val requestBody = okhttp3.MultipartBody.Builder()
-                    .setType(okhttp3.MultipartBody.FORM)
-                    .addFormDataPart("metadata", null, metadata.toString().toRequestBody(mediaType))
-                    .addFormDataPart("file", fileName, exportedData.toRequestBody(mediaType))
+                val metadata = org.json.JSONObject().apply {
+                    put("name", fileName)
+                    put("mimeType", "application/json")
+                    put("parents", org.json.JSONArray().put(folderId))
+                }
+                
+                val mediaTypeRelated = "multipart/related".toMediaTypeOrNull()
+                val jsonType = "application/json; charset=UTF-8".toMediaTypeOrNull()
+
+                val multipartBody = okhttp3.MultipartBody.Builder()
+                    .setType(mediaTypeRelated!!)
+                    .addPart(metadata.toString().toRequestBody(jsonType))
+                    .addPart(exportedData.toRequestBody(jsonType))
                     .build()
 
-                val uploadUrl = if (fileId == null) {
-                    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
-                } else {
-                    "https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart"
-                }
-                
-                val requestBuilder = okhttp3.Request.Builder()
-                    .url(uploadUrl)
+                val uploadRequest = okhttp3.Request.Builder()
+                    .url("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
                     .header("Authorization", "Bearer ${token}")
+                    .post(multipartBody)
+                    .build()
                 
-                if (fileId != null) {
-                    requestBuilder.patch(requestBody)
-                } else {
-                    requestBuilder.post(requestBody)
-                }
+                val response = client.newCall(uploadRequest).execute()
                 
-                val response = client.newCall(requestBuilder.build()).execute()
                 if (response.isSuccessful) {
+                    val newJson = response.body?.string()
+                    val newFileId = if (newJson != null) org.json.JSONObject(newJson).optString("id") else null
+
+                    // Dọn dẹp các file sao lưu cũ / lỗi trước đó
+                    for (oldId in existingFileIds) {
+                        if (oldId != newFileId) {
+                            try {
+                                val deleteRequest = okhttp3.Request.Builder()
+                                    .url("https://www.googleapis.com/drive/v3/files/${oldId}")
+                                    .header("Authorization", "Bearer ${token}")
+                                    .delete()
+                                    .build()
+                                client.newCall(deleteRequest).execute()
+                            } catch (ignored: Exception) {}
+                        }
+                    }
+
                     addLog("Tải lên Google Drive thành công!")
                     _syncStatus.value = "SUCCESS"
                     showSuccessNotification("Sao lưu lên Google Drive thành công!")
                 } else {
-                    addLog("Lỗi tải lên: ${response.code}")
+                    addLog("Lỗi tải lên: HTTP ${response.code}")
                     _syncStatus.value = "ERROR"
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                addLog("Lỗi hệ thống: ${e.message}")
+                addLog("Lỗi hệ thống: ${e.message ?: e.toString()}")
+                _syncStatus.value = "ERROR"
             }
         }
     }
@@ -3252,7 +3277,7 @@ val folderName = "[APP_FINANCE]"
                 
                 val folderName = "[APP_FINANCE]"
                 val fileName = "finance_backup.json"
-                val client = okhttp3.OkHttpClient()
+                val client = createDriveHttpClient()
                 
                 var folderId: String? = null
                 val searchFolderRequest = okhttp3.Request.Builder()
@@ -3329,7 +3354,7 @@ val folderName = "[APP_FINANCE]"
                 
                 val folderName = "[APP_FINANCE]"
                 val fileName = "finance_backup.json"
-                val client = okhttp3.OkHttpClient()
+                val client = createDriveHttpClient()
                 
                 // 1. Check folder [APP_FINANCE]
                 var folderId: String? = null
@@ -3490,7 +3515,7 @@ val folderName = "[APP_FINANCE]"
                 
                 val folderName = "[APP_FINANCE]"
                 val fileName = "finance_backup.json"
-                val client = okhttp3.OkHttpClient()
+                val client = createDriveHttpClient()
                 
                 addLog("Đang kiểm tra thư mục ${folderName}...")
                 var folderId: String? = null
